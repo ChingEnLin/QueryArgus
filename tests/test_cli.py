@@ -1,4 +1,4 @@
-"""End-to-end CLI tests with a mongomock-backed connection injected in."""
+"""End-to-end CLI tests with mocked Azure auth + a mongomock-backed connection."""
 
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ else:
 
 
 @pytest.fixture
-def patch_connection(monkeypatch: pytest.MonkeyPatch) -> MongoClientT:
-    """Patch ``CosmosConnection.from_connection_string`` to return a mongomock-backed connection."""
+def patched_credentials(monkeypatch: pytest.MonkeyPatch) -> MongoClientT:
+    """Patch ``CosmosConnection.from_default_credential`` to return a mongomock-backed connection."""
     client: MongoClientT = mongomock.MongoClient()
     client["audit"]["users"].insert_many(
         [
@@ -31,43 +31,42 @@ def patch_connection(monkeypatch: pytest.MonkeyPatch) -> MongoClientT:
     )
 
     def _fake(
-        connection_string: str, *, cosmos_account: str, database: str, **_: Any
+        cls: type[CosmosConnection],
+        /,
+        *,
+        account: str,
+        database: str,
+        prefer_read_only: bool = True,
+        **_: Any,
     ) -> CosmosConnection:
-        return CosmosConnection.from_existing_client(
-            client=client, cosmos_account=cosmos_account, database=database
-        )
+        return CosmosConnection.from_existing_client(client=client, cosmos_account=account, database=database)
 
-    monkeypatch.setattr(
-        "queryargus.cli.main.CosmosConnection.from_connection_string", _fake
-    )
-    monkeypatch.setenv("COSMOS_CONNECTION_STRING", "mongodb://fake:fake@host/")
+    monkeypatch.setattr(CosmosConnection, "from_default_credential", classmethod(_fake))
     return client
 
 
-def test_run_text_output(patch_connection: MongoClientT) -> None:
+def test_run_text_output(patched_credentials: MongoClientT) -> None:
     runner = CliRunner()
     result = runner.invoke(
-        app, ["run", "--collection", "users", "--database", "audit", "--sample-size", "10"]
+        app,
+        ["run", "--account", "my-acct", "--database", "audit", "--collection", "users", "--sample-size", "10"],
     )
     assert result.exit_code == 0, result.stdout
     assert "collection: users" in result.stdout
     assert "name" in result.stdout
 
 
-def test_run_json_output(patch_connection: MongoClientT) -> None:
+def test_run_json_output(patched_credentials: MongoClientT) -> None:
     runner = CliRunner()
     result = runner.invoke(
         app,
         [
             "run",
-            "--collection",
-            "users",
-            "--database",
-            "audit",
-            "--sample-size",
-            "10",
-            "--output",
-            "json",
+            "--account", "my-acct",
+            "--database", "audit",
+            "--collection", "users",
+            "--sample-size", "10",
+            "--output", "json",
         ],
     )
     assert result.exit_code == 0, result.stdout
@@ -77,8 +76,60 @@ def test_run_json_output(patch_connection: MongoClientT) -> None:
     assert {"name", "age"}.issubset(paths)
 
 
-def test_run_missing_env_var_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("COSMOS_CONNECTION_STRING", raising=False)
+def test_run_surfaces_credential_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _explode(cls: type[CosmosConnection], /, **_: Any) -> CosmosConnection:
+        raise RuntimeError("Run `az login` and try again.")
+
+    monkeypatch.setattr(CosmosConnection, "from_default_credential", classmethod(_explode))
     runner = CliRunner()
-    result = runner.invoke(app, ["run", "--collection", "users", "--database", "audit"])
-    assert result.exit_code != 0
+    result = runner.invoke(app, ["run", "--account", "x", "--database", "d", "--collection", "c"])
+    assert result.exit_code == 1
+    assert "az login" in (result.stdout + (result.stderr or ""))
+
+
+def test_accounts_command_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    from queryargus.cli import main as cli_main
+
+    monkeypatch.setattr(
+        cli_main,
+        "list_cosmos_accounts",
+        lambda: [
+            {"name": "alpha", "id": "/x/alpha", "subscription": "Sub-1", "location": "eastus", "kind": "MongoDB"},
+            {"name": "beta", "id": "/x/beta", "subscription": "Sub-2", "location": "westus", "kind": "MongoDB"},
+        ],
+    )
+    runner = CliRunner()
+    result = runner.invoke(app, ["accounts"])
+    assert result.exit_code == 0, result.stdout
+    assert "alpha" in result.stdout
+    assert "beta" in result.stdout
+
+
+def test_accounts_command_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    from queryargus.cli import main as cli_main
+
+    monkeypatch.setattr(cli_main, "list_cosmos_accounts", lambda: [{"name": "alpha", "id": "/x/alpha"}])
+    runner = CliRunner()
+    result = runner.invoke(app, ["accounts", "--output", "json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload[0]["name"] == "alpha"
+
+
+def test_auth_status_emulator(monkeypatch: pytest.MonkeyPatch) -> None:
+    from queryargus.cli import main as cli_main
+
+    monkeypatch.setattr(cli_main, "check_auth", lambda: {"ok": True, "mode": "emulator", "account": "emulator"})
+    runner = CliRunner()
+    result = runner.invoke(app, ["auth-status"])
+    assert result.exit_code == 0
+    assert "emulator" in result.stdout
+
+
+def test_auth_status_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    from queryargus.cli import main as cli_main
+
+    monkeypatch.setattr(cli_main, "check_auth", lambda: {"ok": False, "reason": "Run `az login`"})
+    runner = CliRunner()
+    result = runner.invoke(app, ["auth-status"])
+    assert result.exit_code == 1
