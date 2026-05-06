@@ -20,8 +20,9 @@ def test_cli_version_command() -> None:
     assert queryargus.__version__ in result.stdout
 
 
-def test_cli_run_placeholder() -> None:
+def test_cli_run_requires_connection_string(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """`run` exits non-zero with a clear message when COSMOS_CONNECTION_STRING is unset."""
+    monkeypatch.delenv("COSMOS_CONNECTION_STRING", raising=False)
     runner = CliRunner()
-    result = runner.invoke(app, ["run", "--collection", "users"])
-    assert result.exit_code == 0
-    assert "users" in result.stdout
+    result = runner.invoke(app, ["run", "--collection", "users", "--database", "audit"])
+    assert result.exit_code != 0
