@@ -1,4 +1,4 @@
-"""End-to-end CLI tests with mocked Azure auth + a mongomock-backed connection."""
+"""End-to-end CLI tests with mocked Azure auth + scripted LLM + mongomock connection."""
 
 from __future__ import annotations
 
@@ -10,6 +10,9 @@ import pytest
 from typer.testing import CliRunner
 
 from queryargus.cli.main import app
+from queryargus.llm.client import ScriptedLLMClient
+from queryargus.models.action import AgentAction
+from queryargus.models.config import ArgusConfig
 from queryargus.models.connection import CosmosConnection
 
 if TYPE_CHECKING:
@@ -20,13 +23,14 @@ else:
 
 @pytest.fixture
 def patched_credentials(monkeypatch: pytest.MonkeyPatch) -> MongoClientT:
-    """Patch ``CosmosConnection.from_default_credential`` to return a mongomock-backed connection."""
+    """Patch ``CosmosConnection.from_default_credential`` AND the LLM factory.
+
+    The LLM stub returns: schema_sample → conclude — minimum viable run.
+    """
     client: MongoClientT = mongomock.MongoClient()
     client["audit"]["users"].insert_many(
         [
-            {"_id": 1, "name": "Alice", "age": 30},
-            {"_id": 2, "name": "Bob", "age": None},
-            {"_id": 3, "name": "Carol"},
+            {"_id": i, "name": f"u{i}", "age": 25 + (i % 30)} for i in range(20)
         ]
     )
 
@@ -42,6 +46,18 @@ def patched_credentials(monkeypatch: pytest.MonkeyPatch) -> MongoClientT:
         return CosmosConnection.from_existing_client(client=client, cosmos_account=account, database=database)
 
     monkeypatch.setattr(CosmosConnection, "from_default_credential", classmethod(_fake))
+
+    def _fake_llm(_: ArgusConfig) -> ScriptedLLMClient:
+        return ScriptedLLMClient(
+            actions=[
+                AgentAction(reasoning="survey", action="schema_sample", action_input={"sample_size": 20}, confidence=0.95),
+                AgentAction(reasoning="check ages", action="get_stats", action_input={"field": "age", "operation": "min"}, confidence=0.7),
+                AgentAction(reasoning="check ages 2", action="get_stats", action_input={"field": "age", "operation": "max"}, confidence=0.7),
+                AgentAction(reasoning="done", action="conclude", action_input={}, confidence=1.0),
+            ]
+        )
+
+    monkeypatch.setattr("queryargus.cli.main._build_llm_client", _fake_llm)
     return client
 
 
@@ -49,11 +65,12 @@ def test_run_text_output(patched_credentials: MongoClientT) -> None:
     runner = CliRunner()
     result = runner.invoke(
         app,
-        ["run", "--account", "my-acct", "--database", "audit", "--collection", "users", "--sample-size", "10"],
+        ["run", "--account", "my-acct", "--database", "audit", "--collection", "users", "--sample-size", "20"],
     )
     assert result.exit_code == 0, result.stdout
     assert "collection: users" in result.stdout
-    assert "name" in result.stdout
+    # Default scripted LLM has no write_finding actions, so we expect an empty findings line.
+    assert "No findings committed." in result.stdout or "FINDINGS" in result.stdout
 
 
 def test_run_json_output(patched_credentials: MongoClientT) -> None:
@@ -65,15 +82,30 @@ def test_run_json_output(patched_credentials: MongoClientT) -> None:
             "--account", "my-acct",
             "--database", "audit",
             "--collection", "users",
-            "--sample-size", "10",
+            "--sample-size", "20",
             "--output", "json",
         ],
     )
     assert result.exit_code == 0, result.stdout
     payload = json.loads(result.stdout)
+    # New shape: AuditReport, not SchemaSampleResult.
     assert payload["collection"] == "users"
-    paths = {f["path"] for f in payload["fields"]}
-    assert {"name", "age"}.issubset(paths)
+    assert payload["database"] == "audit"
+    assert "findings" in payload
+    assert "run_trace" in payload
+    assert "evaluation_records" in payload
+
+
+def test_inspect_text_output(patched_credentials: MongoClientT) -> None:
+    """`inspect` is the bare schema-sample path — no LLM, no agent loop."""
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["inspect", "--account", "my-acct", "--database", "audit", "--collection", "users", "--sample-size", "10"],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "collection: users" in result.stdout
+    assert "name" in result.stdout
 
 
 def test_run_surfaces_credential_error(monkeypatch: pytest.MonkeyPatch) -> None:
