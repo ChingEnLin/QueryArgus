@@ -18,9 +18,13 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
+
+if TYPE_CHECKING:
+    from queryargus.storage import ReportStore
+    from queryargus.storage.postgres import ReportSummary
 
 from queryargus import __version__
 from queryargus.agent.loop import ArgusAgent
@@ -222,6 +226,8 @@ def run(
         postgres_url=postgres_url,
     )
 
+    persist_url = _validate_postgres_url(postgres_url, required=False)
+
     connection = _connect(account=account, database=database, allow_read_write=allow_read_write)
     llm = _build_llm_client(config)
     judge_llm: LLMClient | None = None
@@ -237,8 +243,8 @@ def run(
     )
     report = agent.run(connection=connection, collection=collection)
 
-    if postgres_url:
-        report = _persist_and_diff(report, postgres_url)
+    if persist_url:
+        report = _persist_and_diff(report, persist_url)
 
     _emit_report(report, output)
 
@@ -248,14 +254,16 @@ def reports(
     collection: str | None = typer.Option(None, "--collection", "-c"),
     database: str | None = typer.Option(None, "--database", "-d"),
     limit: int = typer.Option(10, "--limit", "-l", min=1),
-    postgres_url: str = typer.Option(..., "--postgres-url", envvar="POSTGRES_URL"),
+    postgres_url: str | None = typer.Option(None, "--postgres-url", envvar="POSTGRES_URL"),
     output: str = typer.Option("text", "--output", "-o"),
 ) -> None:
     """List persisted audit reports."""
     from queryargus.storage import ReportStore  # noqa: PLC0415
 
-    store = ReportStore(postgres_url)
-    summaries = store.list_reports(collection=collection, database=database, limit=limit)
+    url = _validate_postgres_url(postgres_url, required=True)
+    assert url is not None  # validator exits if None
+    store = ReportStore(url)
+    summaries = _safe_list_reports(store, collection=collection, database=database, limit=limit)
     if output == "json":
         typer.echo(json.dumps([
             {
@@ -286,14 +294,16 @@ def reports(
 def diff(
     collection: str = typer.Option(..., "--collection", "-c"),
     database: str = typer.Option(..., "--database", "-d"),
-    postgres_url: str = typer.Option(..., "--postgres-url", envvar="POSTGRES_URL"),
+    postgres_url: str | None = typer.Option(None, "--postgres-url", envvar="POSTGRES_URL"),
     output: str = typer.Option("text", "--output", "-o"),
 ) -> None:
     """Diff the most recent two runs of (collection, database)."""
     from queryargus.storage import ReportStore  # noqa: PLC0415
 
-    store = ReportStore(postgres_url)
-    summaries = store.list_reports(collection=collection, database=database, limit=2)
+    url = _validate_postgres_url(postgres_url, required=True)
+    assert url is not None
+    store = ReportStore(url)
+    summaries = _safe_list_reports(store, collection=collection, database=database, limit=2)
     if len(summaries) < 2:
         typer.secho(
             f"Need at least 2 runs to diff; found {len(summaries)} for "
@@ -381,6 +391,47 @@ def _emit_report(report: AuditReport, output: str) -> None:
         typer.echo(f"\nDISMISSED ({len(report.dismissed_findings)}):")
         for f in report.dismissed_findings:
             typer.echo(f"  - {f.field} / {f.category}: {f.description[:120]}")
+
+
+def _safe_list_reports(
+    store: ReportStore,
+    *,
+    collection: str | None,
+    database: str | None,
+    limit: int,
+) -> list[ReportSummary]:
+    """Wrap ``store.list_reports`` so a connection failure becomes a friendly CLI error."""
+    import psycopg2  # noqa: PLC0415
+
+    try:
+        return store.list_reports(collection=collection, database=database, limit=limit)
+    except psycopg2.OperationalError as exc:
+        typer.secho(
+            f"Postgres connection failed: {exc}".strip(),
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+
+
+def _validate_postgres_url(value: str | None, *, required: bool) -> str | None:
+    """Normalise the --postgres-url flag.
+
+    Empty strings (e.g. from ``--postgres-url "$POSTGRES_URL"`` when the env var
+    is unset) are treated the same as ``None``. If ``required`` and the URL is
+    missing, exit with a clear message instead of falling through to psycopg2's
+    Unix-socket default.
+    """
+    url = (value or "").strip() or None
+    if required and url is None:
+        typer.secho(
+            "--postgres-url is required (or set POSTGRES_URL). "
+            "Pass an explicit DSN like postgresql://user:pass@host:5432/db.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    return url
 
 
 def _persist_and_diff(report: AuditReport, postgres_url: str) -> AuditReport:
