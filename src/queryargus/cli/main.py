@@ -135,7 +135,7 @@ def run(
     collection: str = typer.Option(..., "--collection", "-c"),
     sample_size: int = typer.Option(200, "--sample-size", "-n", min=1),
     max_iterations: int = typer.Option(20, "--max-iterations", min=1),
-    model: str = typer.Option("gemini-2.0-flash-exp", "--model", help="Gemini model name."),
+    model: str = typer.Option("gemini-2.5-flash", "--model", help="Gemini model name."),
     allow_read_write: bool = typer.Option(False, "--allow-read-write"),
     output: str = typer.Option("text", "--output", "-o", help="text | json"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),

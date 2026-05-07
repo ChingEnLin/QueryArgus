@@ -31,7 +31,7 @@ class GeminiClient:
     def __init__(
         self,
         *,
-        model: str = "gemini-2.0-flash-exp",
+        model: str = "gemini-2.5-flash",
         api_key: str | None = None,
         temperature: float = 0.2,
     ) -> None:

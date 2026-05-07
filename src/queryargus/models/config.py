@@ -68,7 +68,7 @@ class ArgusConfig(BaseModel):
 
     # LLM (Gemini-only in v1)
     llm_provider: LLMProvider = "gemini"
-    llm_model: str = "gemini-pro"
+    llm_model: str = "gemini-2.5-flash"
 
     # Evaluation
     evaluation: EvaluatorConfig = Field(default_factory=EvaluatorConfig)
