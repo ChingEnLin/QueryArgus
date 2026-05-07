@@ -26,7 +26,13 @@ from queryargus import __version__
 from queryargus.agent.loop import ArgusAgent
 from queryargus.azure_service import check_auth, list_cosmos_accounts
 from queryargus.llm.client import LLMClient
-from queryargus.models.config import ArgusConfig
+from queryargus.models.config import (
+    PROFILE_BALANCED,
+    PROFILE_FAST,
+    PROFILE_THOROUGH,
+    ArgusConfig,
+    EvaluatorConfig,
+)
 from queryargus.models.connection import CosmosConnection
 from queryargus.models.report import AuditReport
 from queryargus.tools.schema_sample import SchemaSampleResult, schema_sample
@@ -56,6 +62,39 @@ def _build_llm_client(config: ArgusConfig) -> LLMClient:
     from queryargus.llm.gemini import GeminiClient  # noqa: PLC0415
 
     return GeminiClient(model=config.llm_model)
+
+
+def _build_judge_llm_client(model: str) -> LLMClient:
+    """Build the judge LLM. Same provider as the agent in v1; different model."""
+    from queryargus.llm.gemini import GeminiClient  # noqa: PLC0415
+
+    return GeminiClient(model=model)
+
+
+_PROFILES: dict[str, EvaluatorConfig] = {
+    "fast": PROFILE_FAST,
+    "balanced": PROFILE_BALANCED,
+    "thorough": PROFILE_THOROUGH,
+}
+
+
+def _resolve_evaluator_config(
+    profile: str | None,
+    *,
+    action: str | None,
+    finding: str | None,
+    run: str | None,
+) -> EvaluatorConfig:
+    """Start from a profile (or defaults) and apply per-gate overrides."""
+    base = _PROFILES.get(profile, EvaluatorConfig()) if profile else EvaluatorConfig()
+    overrides: dict[str, Any] = {}
+    if action is not None:
+        overrides["action_evaluator"] = action
+    if finding is not None:
+        overrides["finding_evaluator"] = finding
+    if run is not None:
+        overrides["run_evaluator"] = run
+    return base.model_copy(update=overrides) if overrides else base
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +175,32 @@ def run(
     sample_size: int = typer.Option(200, "--sample-size", "-n", min=1),
     max_iterations: int = typer.Option(20, "--max-iterations", min=1),
     model: str = typer.Option("gemini-2.5-flash", "--model", help="Gemini model name."),
+    eval_profile: str | None = typer.Option(
+        None,
+        "--eval-profile",
+        help="Evaluation profile: fast | balanced | thorough.",
+    ),
+    action_evaluator: str | None = typer.Option(
+        None, "--action-evaluator",
+        help="Override action gate: none | rules.",
+    ),
+    finding_evaluator: str | None = typer.Option(
+        None, "--finding-evaluator",
+        help="Override finding gate: none | rules | self | composite.",
+    ),
+    run_evaluator: str | None = typer.Option(
+        None, "--run-evaluator",
+        help="Override run gate: none | rules | self | judge | composite.",
+    ),
+    judge_model: str = typer.Option(
+        "gemini-2.5-pro", "--judge-model",
+        help="Model used by judge run-evaluator (only consulted when run gate is 'judge' or 'composite').",
+    ),
+    postgres_url: str | None = typer.Option(
+        None, "--postgres-url",
+        envvar="POSTGRES_URL",
+        help="Persist the report and surface diff against previous run for the same collection.",
+    ),
     allow_read_write: bool = typer.Option(False, "--allow-read-write"),
     output: str = typer.Option("text", "--output", "-o", help="text | json"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
@@ -143,16 +208,107 @@ def run(
     """Run the full ReAct audit loop and emit an AuditReport."""
     _setup_logging(verbose)
 
+    eval_config = _resolve_evaluator_config(
+        eval_profile,
+        action=action_evaluator,
+        finding=finding_evaluator,
+        run=run_evaluator,
+    )
     config = ArgusConfig(
         sample_size=sample_size,
         max_iterations=max_iterations,
         llm_model=model,
+        evaluation=eval_config,
+        postgres_url=postgres_url,
     )
+
     connection = _connect(account=account, database=database, allow_read_write=allow_read_write)
     llm = _build_llm_client(config)
-    agent = ArgusAgent.with_defaults(config=config, llm=llm)
+    judge_llm: LLMClient | None = None
+    if eval_config.run_evaluator in ("judge", "composite"):
+        judge_llm = _build_judge_llm_client(judge_model)
+
+    agent = ArgusAgent.from_config(
+        config=config,
+        llm=llm,
+        agent_model_name=config.llm_model,
+        judge_llm=judge_llm,
+        judge_model_name=judge_model,
+    )
     report = agent.run(connection=connection, collection=collection)
+
+    if postgres_url:
+        report = _persist_and_diff(report, postgres_url)
+
     _emit_report(report, output)
+
+
+@app.command()
+def reports(
+    collection: str | None = typer.Option(None, "--collection", "-c"),
+    database: str | None = typer.Option(None, "--database", "-d"),
+    limit: int = typer.Option(10, "--limit", "-l", min=1),
+    postgres_url: str = typer.Option(..., "--postgres-url", envvar="POSTGRES_URL"),
+    output: str = typer.Option("text", "--output", "-o"),
+) -> None:
+    """List persisted audit reports."""
+    from queryargus.storage import ReportStore  # noqa: PLC0415
+
+    store = ReportStore(postgres_url)
+    summaries = store.list_reports(collection=collection, database=database, limit=limit)
+    if output == "json":
+        typer.echo(json.dumps([
+            {
+                "id": str(s.id), "collection": s.collection, "database": s.database,
+                "cosmos_account": s.cosmos_account, "run_at": s.run_at.isoformat(),
+                "findings_count": s.findings_count,
+                "overall_quality_score": s.overall_quality_score,
+                "run_eval_verdict": s.run_eval_verdict,
+                "total_input_tokens": s.total_input_tokens,
+                "total_output_tokens": s.total_output_tokens,
+            }
+            for s in summaries
+        ], indent=2))
+        return
+    if not summaries:
+        typer.echo("No reports found.")
+        return
+    typer.echo(f"{'run_at':<26} {'collection':<24} {'database':<16} {'findings':>8} {'tokens':>10}  verdict")
+    for s in summaries:
+        total_tokens = s.total_input_tokens + s.total_output_tokens
+        typer.echo(
+            f"{s.run_at.isoformat():<26} {s.collection[:24]:<24} {s.database[:16]:<16} "
+            f"{s.findings_count:>8} {total_tokens:>10}  {s.run_eval_verdict or '-'}"
+        )
+
+
+@app.command()
+def diff(
+    collection: str = typer.Option(..., "--collection", "-c"),
+    database: str = typer.Option(..., "--database", "-d"),
+    postgres_url: str = typer.Option(..., "--postgres-url", envvar="POSTGRES_URL"),
+    output: str = typer.Option("text", "--output", "-o"),
+) -> None:
+    """Diff the most recent two runs of (collection, database)."""
+    from queryargus.storage import ReportStore  # noqa: PLC0415
+
+    store = ReportStore(postgres_url)
+    summaries = store.list_reports(collection=collection, database=database, limit=2)
+    if len(summaries) < 2:
+        typer.secho(
+            f"Need at least 2 runs to diff; found {len(summaries)} for "
+            f"{collection!r} / {database!r}.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    current = store.get(summaries[0].id)
+    previous = store.get(summaries[1].id)
+    if current is None or previous is None:
+        typer.secho("Failed to load reports.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    diffed = current.diff_against(previous)
+    _emit_diff(diffed, previous, output)
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +381,52 @@ def _emit_report(report: AuditReport, output: str) -> None:
         typer.echo(f"\nDISMISSED ({len(report.dismissed_findings)}):")
         for f in report.dismissed_findings:
             typer.echo(f"  - {f.field} / {f.category}: {f.description[:120]}")
+
+
+def _persist_and_diff(report: AuditReport, postgres_url: str) -> AuditReport:
+    """Persist ``report``; surface diff fields populated from the previous run if any."""
+    from queryargus.storage import ReportStore  # noqa: PLC0415
+
+    store = ReportStore(postgres_url)
+    store.init_schema()
+    previous = store.get_previous(
+        collection=report.collection,
+        database=report.database,
+        before=report.run_at,
+    )
+    if previous is not None:
+        report = report.diff_against(previous)
+    store.save(report)
+    return report
+
+
+def _emit_diff(current: AuditReport, previous: AuditReport, output: str) -> None:
+    if output == "json":
+        typer.echo(current.model_dump_json(indent=2))
+        return
+    if output != "text":
+        typer.secho(f"unknown --output value: {output!r}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    typer.echo(
+        f"diff: {current.collection} / {current.database}  "
+        f"current={current.id} (run_at={current.run_at.isoformat()})  "
+        f"previous={previous.id} (run_at={previous.run_at.isoformat()})"
+    )
+    typer.echo(
+        f"new={len(current.new_findings)}  "
+        f"resolved={len(current.resolved_findings)}  "
+        f"regressed_fields={len(current.regressed_fields)}"
+    )
+    if current.new_findings:
+        typer.echo("\nNEW:")
+        for f in current.new_findings:
+            typer.echo(f"  + [{f.severity.value}] {f.field} / {f.category} ({f.affected_pct:.3f})")
+    if current.resolved_findings:
+        typer.echo("\nRESOLVED:")
+        for f in current.resolved_findings:
+            typer.echo(f"  - [{f.severity.value}] {f.field} / {f.category}")
+    if current.regressed_fields:
+        typer.echo("\nREGRESSED FIELDS: " + ", ".join(current.regressed_fields))
 
 
 def _severity_rank(s: str) -> int:

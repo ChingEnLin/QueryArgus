@@ -42,10 +42,21 @@ class LLMResponse:
     usage: TokenUsage = field(default_factory=TokenUsage)
 
 
+@dataclass
+class JSONResponse:
+    """Generic JSON-coerced response. Used by self/judge evaluators."""
+
+    raw: str
+    usage: TokenUsage = field(default_factory=TokenUsage)
+
+
 class LLMClient(Protocol):
-    """One method: turn a prompt into a structured action plus a usage record."""
+    """Two surfaces: action proposal (planner) and free-form JSON (evaluators)."""
 
     def propose_action(self, *, system: str, user: str) -> LLMResponse:
+        ...
+
+    def complete_json(self, *, system: str, user: str) -> JSONResponse:
         ...
 
 
@@ -61,21 +72,34 @@ class ScriptedLLMClient:
 
     def __init__(
         self,
-        actions: list[AgentAction],
+        actions: list[AgentAction] | None = None,
         *,
+        json_responses: list[str] | None = None,
         fallback: AgentAction | None = None,
+        json_fallback: str | None = None,
         usage_per_call: TokenUsage | None = None,
     ) -> None:
-        self._queue: deque[AgentAction] = deque(actions)
+        self._queue: deque[AgentAction] = deque(actions or [])
+        self._json_queue: deque[str] = deque(json_responses or [])
         self._fallback = fallback or AgentAction(
             reasoning="ScriptedLLMClient queue exhausted — concluding.",
             action="conclude",
             confidence=1.0,
         )
+        self._json_fallback = json_fallback or (
+            '{"verdict": "pass", "score": 1.0, '
+            '"reason": "scripted-default", "evaluated_by": "scripted"}'
+        )
         self._usage = usage_per_call or TokenUsage()
         self.prompts: list[tuple[str, str]] = []
+        self.json_prompts: list[tuple[str, str]] = []
 
     def propose_action(self, *, system: str, user: str) -> LLMResponse:
         self.prompts.append((system, user))
         action = self._queue.popleft() if self._queue else self._fallback
         return LLMResponse(action=action, usage=self._usage)
+
+    def complete_json(self, *, system: str, user: str) -> JSONResponse:
+        self.json_prompts.append((system, user))
+        raw = self._json_queue.popleft() if self._json_queue else self._json_fallback
+        return JSONResponse(raw=raw, usage=self._usage)

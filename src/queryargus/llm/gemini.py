@@ -22,7 +22,7 @@ from typing import Any
 
 import pydantic
 
-from queryargus.llm.client import LLMResponse, TokenUsage
+from queryargus.llm.client import JSONResponse, LLMResponse, TokenUsage
 from queryargus.models.action import AgentAction
 
 logger = logging.getLogger(__name__)
@@ -95,3 +95,24 @@ class GeminiClient:
                 )
         assert last_error is not None
         raise RuntimeError(f"Gemini failed to produce a valid AgentAction after retries: {last_error}")
+
+    def complete_json(self, *, system: str, user: str) -> JSONResponse:
+        """Free-form JSON completion. Used by self/judge evaluators.
+
+        No client-side validation here — the caller is responsible for parsing
+        the raw text into the schema it expects (typically EvaluationResult).
+        """
+        from google.genai import types as genai_types  # noqa: PLC0415
+
+        config = genai_types.GenerateContentConfig(
+            system_instruction=system,
+            response_mime_type="application/json",
+            temperature=self._temperature,
+        )
+        response = self._client.models.generate_content(
+            model=self._model,
+            contents=user,
+            config=config,
+        )
+        raw = getattr(response, "text", None) or ""
+        return JSONResponse(raw=raw, usage=_extract_usage(response))

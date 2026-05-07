@@ -50,3 +50,39 @@ class AuditReport(BaseModel):
     new_findings: list[Finding] = Field(default_factory=list)
     resolved_findings: list[Finding] = Field(default_factory=list)
     regressed_fields: list[str] = Field(default_factory=list)
+
+    def diff_against(self, previous: AuditReport, *, regression_factor: float = 1.5) -> AuditReport:
+        """Return a copy with diff fields populated against ``previous``.
+
+        - ``new_findings``: findings whose ``(field, category)`` did not appear before.
+        - ``resolved_findings``: previous findings whose ``(field, category)`` is gone.
+        - ``regressed_fields``: fields whose severity rose OR whose ``affected_pct``
+          climbed by ``regression_factor`` (default 1.5×). Deduplicated.
+
+        Pure function — does not touch storage. Idempotent.
+        """
+        prev_index = {(f.field, f.category): f for f in previous.findings}
+        curr_index = {(f.field, f.category): f for f in self.findings}
+
+        new = [f for k, f in curr_index.items() if k not in prev_index]
+        resolved = [f for k, f in prev_index.items() if k not in curr_index]
+
+        sev_rank = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+        regressed: list[str] = []
+        for key, cur in curr_index.items():
+            prev = prev_index.get(key)
+            if prev is None:
+                continue
+            severity_worse = sev_rank.get(cur.severity.value, 0) > sev_rank.get(prev.severity.value, 0)
+            pct_worse = (
+                prev.affected_pct > 0 and cur.affected_pct > prev.affected_pct * regression_factor
+            )
+            if severity_worse or pct_worse:
+                regressed.append(cur.field)
+
+        return self.model_copy(update={
+            "previous_run_id": previous.id,
+            "new_findings": new,
+            "resolved_findings": resolved,
+            "regressed_fields": sorted(set(regressed)),
+        })

@@ -29,6 +29,11 @@ from queryargus.agent.evaluation.base import (
     FindingEvaluator,
     RunEvaluator,
 )
+from queryargus.agent.evaluation.factory import (
+    build_action_evaluator,
+    build_finding_evaluator,
+    build_run_evaluator,
+)
 from queryargus.agent.evaluation.rules import (
     RulesActionEvaluator,
     RulesFindingEvaluator,
@@ -73,6 +78,36 @@ class ArgusAgent:
             action_evaluator=RulesActionEvaluator(),
             finding_evaluator=RulesFindingEvaluator(),
             run_evaluator=RulesRunEvaluator(),
+        )
+
+    @classmethod
+    def from_config(
+        cls,
+        config: ArgusConfig,
+        llm: LLMClient,
+        *,
+        agent_model_name: str | None = None,
+        judge_llm: LLMClient | None = None,
+        judge_model_name: str | None = None,
+    ) -> ArgusAgent:
+        """Build an agent with the evaluator stack derived from ``config.evaluation``."""
+        agent_name = agent_model_name or config.llm_model
+        return cls(
+            config=config,
+            llm=llm,
+            action_evaluator=build_action_evaluator(config.evaluation),
+            finding_evaluator=build_finding_evaluator(
+                config.evaluation,
+                agent_llm=llm,
+                agent_model_name=agent_name,
+            ),
+            run_evaluator=build_run_evaluator(
+                config.evaluation,
+                agent_llm=llm,
+                agent_model_name=agent_name,
+                judge_llm=judge_llm,
+                judge_model_name=judge_model_name,
+            ),
         )
 
     def run(self, connection: CosmosConnection, collection: str) -> AuditReport:

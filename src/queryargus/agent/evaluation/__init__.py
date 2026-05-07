@@ -13,6 +13,12 @@ from queryargus.agent.evaluation.composite import (
     CompositeFindingEvaluator,
     CompositeRunEvaluator,
 )
+from queryargus.agent.evaluation.factory import (
+    build_action_evaluator,
+    build_finding_evaluator,
+    build_run_evaluator,
+)
+from queryargus.agent.evaluation.judge import JudgeRunEvaluator
 from queryargus.agent.evaluation.rules import (
     ACTION_RULES,
     FINDING_RULES,
@@ -20,6 +26,10 @@ from queryargus.agent.evaluation.rules import (
     RulesActionEvaluator,
     RulesFindingEvaluator,
     RulesRunEvaluator,
+)
+from queryargus.agent.evaluation.self_eval import (
+    SelfFindingEvaluator,
+    SelfRunEvaluator,
 )
 
 __all__ = [
@@ -30,10 +40,16 @@ __all__ = [
     "CompositeRunEvaluator",
     "FINDING_RULES",
     "FindingEvaluator",
+    "JudgeRunEvaluator",
     "RUN_RULES",
     "RulesActionEvaluator",
     "RulesFindingEvaluator",
     "RulesRunEvaluator",
     "RunEvaluator",
+    "SelfFindingEvaluator",
+    "SelfRunEvaluator",
+    "build_action_evaluator",
+    "build_finding_evaluator",
+    "build_run_evaluator",
     "worst",
 ]

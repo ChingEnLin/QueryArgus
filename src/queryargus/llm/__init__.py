@@ -2,6 +2,18 @@
 
 from __future__ import annotations
 
-from queryargus.llm.client import LLMClient, LLMResponse, ScriptedLLMClient, TokenUsage
+from queryargus.llm.client import (
+    JSONResponse,
+    LLMClient,
+    LLMResponse,
+    ScriptedLLMClient,
+    TokenUsage,
+)
 
-__all__ = ["LLMClient", "LLMResponse", "ScriptedLLMClient", "TokenUsage"]
+__all__ = [
+    "JSONResponse",
+    "LLMClient",
+    "LLMResponse",
+    "ScriptedLLMClient",
+    "TokenUsage",
+]
