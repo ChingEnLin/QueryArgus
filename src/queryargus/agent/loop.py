@@ -380,6 +380,8 @@ def _build_report(
         findings=state.findings.all(),
         run_trace=list(state.history),
         summary=_synthesize_summary(state),
+        total_input_tokens=state.total_usage.input_tokens,
+        total_output_tokens=state.total_usage.output_tokens,
         evaluation_records=list(state.evaluation_records),
         dismissed_findings=list(state.dismissed_findings),
         run_evaluation=run_evaluation,

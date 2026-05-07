@@ -202,6 +202,11 @@ def _emit_report(report: AuditReport, output: str) -> None:
         raise typer.Exit(code=2)
     typer.echo(f"collection: {report.collection}  database: {report.database}  account: {report.cosmos_account}")
     typer.echo(report.summary)
+    if report.total_input_tokens or report.total_output_tokens:
+        total = report.total_input_tokens + report.total_output_tokens
+        typer.echo(
+            f"tokens: input={report.total_input_tokens} output={report.total_output_tokens} total={total}"
+        )
     if report.run_evaluation:
         ev = report.run_evaluation
         typer.echo(f"run gate: {ev.verdict.value} (score={ev.score:.2f}) — {ev.reason}")

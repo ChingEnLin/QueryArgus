@@ -21,11 +21,17 @@ class Planner:
 
     def propose(self, state: AgentState) -> AgentAction:
         user = render_user_prompt(state.summarize())
-        action = self.llm.propose_action(system=SYSTEM_PROMPT, user=user)
+        response = self.llm.propose_action(system=SYSTEM_PROMPT, user=user)
+        state.total_usage = state.total_usage + response.usage
+        state.usage_per_iteration.append(response.usage)
         logger.info(
-            "planner iteration=%d proposed=%s confidence=%.2f",
+            "planner iteration=%d proposed=%s confidence=%.2f tokens=%d (in=%d out=%d) total=%d",
             state.iteration,
-            action.action,
-            action.confidence,
+            response.action.action,
+            response.action.confidence,
+            response.usage.total_tokens,
+            response.usage.input_tokens,
+            response.usage.output_tokens,
+            state.total_usage.total_tokens,
         )
-        return action
+        return response.action

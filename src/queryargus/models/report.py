@@ -34,6 +34,11 @@ class AuditReport(BaseModel):
     run_trace: list[AgentAction] = Field(default_factory=list)
     summary: str = ""
 
+    # Token usage across all LLM calls in this run (zero when the loop ran with
+    # ScriptedLLMClient or another provider that does not report usage).
+    total_input_tokens: int = Field(default=0, ge=0)
+    total_output_tokens: int = Field(default=0, ge=0)
+
     # Evaluation outputs (populated by the evaluation layer — see spec §5)
     evaluation_records: list[EvaluationRecord] = Field(default_factory=list)
     dismissed_findings: list[Finding] = Field(default_factory=list)

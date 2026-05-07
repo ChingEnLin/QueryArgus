@@ -7,6 +7,10 @@ emits by default (e.g. boolean ``additionalProperties``), so we keep it simple
 and validate the JSON client-side. The system prompt is detailed enough that
 the model produces well-shaped output reliably; a single retry covers the rare
 malformed case.
+
+Token usage is read from ``response.usage_metadata`` and returned alongside the
+parsed action — the planner accumulates these on AgentState so the report
+surfaces total cost.
 """
 
 from __future__ import annotations
@@ -18,11 +22,22 @@ from typing import Any
 
 import pydantic
 
+from queryargus.llm.client import LLMResponse, TokenUsage
 from queryargus.models.action import AgentAction
 
 logger = logging.getLogger(__name__)
 
 _MAX_PARSE_RETRIES = 1
+
+
+def _extract_usage(response: Any) -> TokenUsage:
+    meta = getattr(response, "usage_metadata", None)
+    if meta is None:
+        return TokenUsage()
+    return TokenUsage(
+        input_tokens=int(getattr(meta, "prompt_token_count", 0) or 0),
+        output_tokens=int(getattr(meta, "candidates_token_count", 0) or 0),
+    )
 
 
 class GeminiClient:
@@ -45,7 +60,7 @@ class GeminiClient:
         self._model = model
         self._temperature = temperature
 
-    def propose_action(self, *, system: str, user: str) -> AgentAction:
+    def propose_action(self, *, system: str, user: str) -> LLMResponse:
         from google.genai import types as genai_types  # noqa: PLC0415
 
         config = genai_types.GenerateContentConfig(
@@ -56,15 +71,18 @@ class GeminiClient:
 
         last_error: Exception | None = None
         retry_user = user
+        cumulative = TokenUsage()
         for attempt in range(_MAX_PARSE_RETRIES + 1):
             response = self._client.models.generate_content(
                 model=self._model,
                 contents=retry_user,
                 config=config,
             )
+            cumulative = cumulative + _extract_usage(response)
             raw = getattr(response, "text", None) or ""
             try:
-                return AgentAction.model_validate_json(raw)
+                action = AgentAction.model_validate_json(raw)
+                return LLMResponse(action=action, usage=cumulative)
             except (pydantic.ValidationError, json.JSONDecodeError) as exc:
                 last_error = exc
                 logger.warning(

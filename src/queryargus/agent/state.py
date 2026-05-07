@@ -11,6 +11,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from queryargus.llm.client import TokenUsage
 from queryargus.models.action import AgentAction
 from queryargus.models.evaluation import EvaluationRecord
 from queryargus.models.finding import Finding
@@ -48,6 +49,9 @@ class AgentState:
     dismissed_findings: list[Finding] = field(default_factory=list)
     evaluation_records: list[EvaluationRecord] = field(default_factory=list)
 
+    total_usage: TokenUsage = field(default_factory=TokenUsage)
+    usage_per_iteration: list[TokenUsage] = field(default_factory=list)
+
     @property
     def remaining_budget(self) -> int:
         return max(0, self.iteration_budget - self.iteration)
@@ -73,6 +77,11 @@ class AgentState:
         lines.append(f"ITERATION {self.iteration}/{self.iteration_budget}")
         lines.append(f"collection: {self.collection}  database: {self.database}  account: {self.cosmos_account}")
         lines.append(f"documents_sampled: {self.documents_sampled}  collection_size: {self.collection_size}")
+        if self.total_usage.total_tokens > 0:
+            lines.append(
+                f"tokens used so far: input={self.total_usage.input_tokens} "
+                f"output={self.total_usage.output_tokens} total={self.total_usage.total_tokens}"
+            )
 
         if self.schema is None:
             lines.append("\nSCHEMA: not yet sampled — call schema_sample first.")
