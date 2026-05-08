@@ -15,7 +15,12 @@ from queryargus.llm.client import ScriptedLLMClient
 from queryargus.models.action import AgentAction
 from queryargus.models.config import ArgusConfig
 from queryargus.models.connection import CosmosConnection
-from queryargus.models.history import FindingHistory, HistoricalContext, empty_history
+from queryargus.models.history import (
+    DismissedPattern,
+    FindingHistory,
+    HistoricalContext,
+    empty_history,
+)
 from queryargus.storage import ReportStore
 
 # ---------------------------------------------------------------------------
@@ -65,7 +70,14 @@ def test_render_includes_persistent_one_off_and_dismissed() -> None:
         runs_considered=4,
         last_run_at=datetime(2026, 5, 1, tzinfo=UTC),
         finding_histories=[persistent, one_off],
-        dismissed_pairs=[("imaging_data", "type_mismatch")],
+        dismissed_patterns=[
+            DismissedPattern(
+                field="imaging_data",
+                category="type_mismatch",
+                dismiss_reason="evidence_query did not match the described condition",
+                critique='use {"$or": [{"$exists": false}, ...]}',
+            ),
+        ],
     )
     rendered = ctx.render()
     assert "PERSISTENT FINDINGS" in rendered
@@ -75,6 +87,36 @@ def test_render_includes_persistent_one_off_and_dismissed() -> None:
     assert "age / outlier_value" in rendered
     assert "DISMISSED PATTERNS" in rendered
     assert "imaging_data / type_mismatch" in rendered
+    # The critique is what closes the cross-run learning loop — it MUST be in the prompt.
+    assert "rejected because" in rendered
+    assert "evidence_query did not match" in rendered
+    assert "suggested correction" in rendered
+
+
+def test_render_marks_persistent_plus_dismissed_for_re_proposal() -> None:
+    """When a (field, category) is BOTH persistent and dismissed, the prompt must escalate."""
+    persistent = FindingHistory(
+        field="versioning.base_patient_id", category="null_rate",
+        runs_considered=3, runs_seen=3,
+        severity_history=["high"] * 3, affected_pct_history=[0.49, 0.78, 0.98],
+        last_seen_run_at=datetime(2026, 5, 1, tzinfo=UTC),
+    )
+    ctx = HistoricalContext(
+        runs_considered=3,
+        last_run_at=datetime(2026, 5, 1, tzinfo=UTC),
+        finding_histories=[persistent],
+        dismissed_patterns=[
+            DismissedPattern(
+                field="versioning.base_patient_id", category="null_rate",
+                dismiss_reason="query checked null only but description claimed null-or-missing",
+                critique='use $or with $exists: false',
+            ),
+        ],
+    )
+    rendered = ctx.render()
+    assert "NOTE" in rendered
+    assert "also listed as PERSISTENT" in rendered
+    assert "qualitatively stronger evidence" in rendered
 
 
 # ---------------------------------------------------------------------------
@@ -157,15 +199,33 @@ def test_load_history_aggregates_findings_across_runs(monkeypatch: pytest.Monkey
                 {"id": rid_b, "run_at": now - timedelta(days=1)},
                 {"id": rid_c, "run_at": now - timedelta(days=2)},
             ],
-            # 2) findings query — email seen in all 3, age seen in 1
+            # 2) findings query — UNION of committed and dismissed.
+            # email committed in all 3 runs; age committed in 1; vfield dismissed in 2.
             [
-                {"field": "email", "category": "null_rate", "severity": "high", "affected_pct": 0.30, "run_at": now},
-                {"field": "email", "category": "null_rate", "severity": "high", "affected_pct": 0.31, "run_at": now - timedelta(days=1)},
-                {"field": "email", "category": "null_rate", "severity": "high", "affected_pct": 0.32, "run_at": now - timedelta(days=2)},
-                {"field": "age", "category": "outlier_value", "severity": "medium", "affected_pct": 0.02, "run_at": now - timedelta(days=2)},
+                {"field": "email", "category": "null_rate", "severity": "high", "affected_pct": 0.30,
+                 "run_id": rid_a, "run_at": now, "source": "committed"},
+                {"field": "email", "category": "null_rate", "severity": "high", "affected_pct": 0.31,
+                 "run_id": rid_b, "run_at": now - timedelta(days=1), "source": "committed"},
+                {"field": "email", "category": "null_rate", "severity": "high", "affected_pct": 0.32,
+                 "run_id": rid_c, "run_at": now - timedelta(days=2), "source": "committed"},
+                {"field": "age", "category": "outlier_value", "severity": "medium", "affected_pct": 0.02,
+                 "run_id": rid_c, "run_at": now - timedelta(days=2), "source": "committed"},
+                # vfield was dismissed in 2 runs — it should still rank as persistent.
+                {"field": "vfield", "category": "null_rate", "severity": "high", "affected_pct": None,
+                 "run_id": rid_a, "run_at": now, "source": "dismissed"},
+                {"field": "vfield", "category": "null_rate", "severity": "high", "affected_pct": None,
+                 "run_id": rid_b, "run_at": now - timedelta(days=1), "source": "dismissed"},
             ],
-            # 3) dismissed query
-            [{"field": "imaging_data", "category": "type_mismatch"}],
+            # 3) dismissed query (DISTINCT ON returns latest per (field, category) with critique)
+            [
+                {
+                    "field": "imaging_data",
+                    "category": "type_mismatch",
+                    "dismiss_reason": "evidence_query did not match the description",
+                    "critique": "use $or with $exists: false",
+                    "created_at": now,
+                }
+            ],
         ]
     )
     monkeypatch.setattr(
@@ -179,18 +239,30 @@ def test_load_history_aggregates_findings_across_runs(monkeypatch: pytest.Monkey
     assert ctx.runs_considered == 3
     assert ctx.last_run_at == now
 
-    # Two distinct (field, category) keys; email is persistent (seen 3x), age is one-off.
-    assert len(ctx.finding_histories) == 2
+    # Three distinct (field, category) keys: email committed 3x, age committed 1x,
+    # vfield dismissed 2x. vfield must rank as PERSISTENT despite never committing —
+    # this is what closes the cross-run learning loop.
+    assert len(ctx.finding_histories) == 3
     persistent = ctx.persistent_findings
     one_off = ctx.one_off_findings
-    assert len(persistent) == 1
-    assert persistent[0].field == "email"
-    assert persistent[0].runs_seen == 3
-    assert persistent[0].is_stable
+    persistent_keys = {(p.field, p.category) for p in persistent}
+    assert ("email", "null_rate") in persistent_keys
+    assert ("vfield", "null_rate") in persistent_keys     # ← the load-bearing assertion
     assert len(one_off) == 1
     assert one_off[0].field == "age"
 
-    assert ctx.dismissed_pairs == [("imaging_data", "type_mismatch")]
+    # vfield has no affected_pct entries (only dismissed appearances) → not stable.
+    vfield_history = next(h for h in persistent if h.field == "vfield")
+    assert vfield_history.runs_seen == 2
+    assert not vfield_history.is_stable
+    assert vfield_history.affected_pct_history == []
+
+    assert len(ctx.dismissed_patterns) == 1
+    pattern = ctx.dismissed_patterns[0]
+    assert pattern.field == "imaging_data"
+    assert pattern.category == "type_mismatch"
+    assert "did not match" in pattern.dismiss_reason
+    assert pattern.critique == "use $or with $exists: false"
 
 
 def test_load_history_empty_when_no_runs(monkeypatch: pytest.MonkeyPatch) -> None:

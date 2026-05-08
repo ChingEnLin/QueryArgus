@@ -27,7 +27,7 @@ from psycopg2.extras import Json, RealDictCursor
 
 from queryargus.models.evaluation import EvaluationRecord
 from queryargus.models.finding import Finding
-from queryargus.models.history import FindingHistory, HistoricalContext, empty_history
+from queryargus.models.history import DismissedPattern, FindingHistory, HistoricalContext, empty_history
 from queryargus.models.report import AuditReport
 
 logger = logging.getLogger(__name__)
@@ -219,55 +219,88 @@ class ReportStore:
             run_ids = [str(r["id"]) for r in runs]
             last_run_at = runs[0]["run_at"]
 
+            # All appearances (committed + dismissed) count toward runs_seen, so
+            # a (field, category) that the agent keeps trying to flag — even if
+            # it keeps being rejected — surfaces as PERSISTENT in the next run.
+            # That's required to close the learning loop on items like
+            # versioning.base_patient_id where the dismissal was an evidence-shape
+            # mistake, not a "this is not a real issue" verdict.
             cur.execute(
                 """
-                SELECT f.field, f.category, f.severity, f.affected_pct, r.run_at
+                SELECT f.field, f.category, f.severity, f.affected_pct,
+                       r.id AS run_id, r.run_at, 'committed' AS source
                 FROM argus_findings f
                 JOIN argus_reports r ON f.report_id = r.id
                 WHERE f.report_id::text = ANY(%s)
-                ORDER BY r.run_at DESC
+                UNION ALL
+                SELECT d.field, d.category, d.severity, NULL::float AS affected_pct,
+                       r.id AS run_id, r.run_at, 'dismissed' AS source
+                FROM argus_dismissed_findings d
+                JOIN argus_reports r ON d.report_id = r.id
+                WHERE d.report_id::text = ANY(%s)
+                ORDER BY run_at DESC
                 """,
-                (run_ids,),
+                (run_ids, run_ids),
             )
             finding_rows = cur.fetchall()
 
+            # Latest dismissal per (field, category) within the loaded runs.
+            # The critique column carries the LLM's suggested correction —
+            # critical for closing the cross-run learning loop.
             cur.execute(
                 """
-                SELECT DISTINCT field, category
+                SELECT DISTINCT ON (field, category)
+                  field, category, dismiss_reason, critique, created_at
                 FROM argus_dismissed_findings
                 WHERE report_id::text = ANY(%s)
+                ORDER BY field, category, created_at DESC
                 """,
                 (run_ids,),
             )
             dismissed_rows = cur.fetchall()
 
         runs_considered = len(runs)
+        # Group by (field, category). Track:
+        #   - runs_seen = unique run_ids in which this pair appeared (committed or dismissed)
+        #   - severity_history / affected_pct_history = committed-only (dismissals lack a real pct)
+        # Most-recent first within each list.
         by_key: dict[tuple[str, str], list[Any]] = {}
         for row in finding_rows:
             key = (str(row["field"]), str(row["category"]))
             by_key.setdefault(key, []).append(row)
 
-        histories = [
-            FindingHistory(
-                field=k[0],
-                category=k[1],
-                runs_considered=runs_considered,
-                runs_seen=len(rows),
-                severity_history=[str(r["severity"]) for r in rows],
-                affected_pct_history=[float(r["affected_pct"]) for r in rows],
-                last_seen_run_at=rows[0]["run_at"],
+        histories: list[FindingHistory] = []
+        for k, rows in by_key.items():
+            unique_run_ids = {row["run_id"] for row in rows}
+            committed = [r for r in rows if r["source"] == "committed"]
+            histories.append(
+                FindingHistory(
+                    field=k[0],
+                    category=k[1],
+                    runs_considered=runs_considered,
+                    runs_seen=len(unique_run_ids),
+                    severity_history=[str(r["severity"]) for r in committed],
+                    affected_pct_history=[float(r["affected_pct"]) for r in committed],
+                    last_seen_run_at=rows[0]["run_at"],
+                )
             )
-            for k, rows in by_key.items()
-        ]
         histories.sort(key=lambda h: (-h.runs_seen, -h.last_seen_run_at.timestamp()))
 
-        dismissed = [(str(r["field"]), str(r["category"])) for r in dismissed_rows]
+        dismissed = [
+            DismissedPattern(
+                field=str(r["field"]),
+                category=str(r["category"]),
+                dismiss_reason=str(r["dismiss_reason"] or ""),
+                critique=(str(r["critique"]) if r.get("critique") else None),
+            )
+            for r in dismissed_rows
+        ]
 
         return HistoricalContext(
             runs_considered=runs_considered,
             last_run_at=last_run_at,
             finding_histories=histories,
-            dismissed_pairs=dismissed,
+            dismissed_patterns=dismissed,
         )
 
     def get_previous(

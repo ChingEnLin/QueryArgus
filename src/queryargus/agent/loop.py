@@ -133,7 +133,7 @@ class ArgusAgent:
                 history.runs_considered,
                 len(history.persistent_findings),
                 len(history.one_off_findings),
-                len(history.dismissed_pairs),
+                len(history.dismissed_patterns),
             )
         planner = Planner(llm=self.llm)
         run_evaluation: EvaluationResult | None = None

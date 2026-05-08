@@ -53,6 +53,26 @@ class FindingHistory:
             return (0.0, 0.0)
         return (min(self.affected_pct_history), max(self.affected_pct_history))
 
+    @property
+    def has_committed_evidence(self) -> bool:
+        """True if at least one prior run committed (vs purely dismissed) this finding."""
+        return len(self.affected_pct_history) > 0
+
+
+@dataclass(frozen=True)
+class DismissedPattern:
+    """A ``(field, category)`` rejected by an evaluator in a prior run.
+
+    Carries the rejection reason and critique so the next run can apply the
+    suggested correction instead of either silently skipping or naively
+    repeating the same mistake.
+    """
+
+    field: str
+    category: str
+    dismiss_reason: str
+    critique: str | None = None
+
 
 @dataclass(frozen=True)
 class HistoricalContext:
@@ -61,7 +81,7 @@ class HistoricalContext:
     runs_considered: int
     last_run_at: datetime | None
     finding_histories: list[FindingHistory] = field(default_factory=list)
-    dismissed_pairs: list[tuple[str, str]] = field(default_factory=list)
+    dismissed_patterns: list[DismissedPattern] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
@@ -92,12 +112,20 @@ class HistoricalContext:
                 " and re-commit; don't rediscover):"
             )
             for h in persistent:
-                lo, hi = h.affected_pct_range
-                stability = "stable" if h.is_stable else "DRIFTING"
-                lines.append(
-                    f"  - {h.field} / {h.category}: {h.runs_seen}/{h.runs_considered} runs, "
-                    f"affected_pct {lo:.3f}-{hi:.3f} ({stability}), last severity={h.last_severity}"
-                )
+                if h.has_committed_evidence:
+                    lo, hi = h.affected_pct_range
+                    stability = "stable" if h.is_stable else "DRIFTING"
+                    lines.append(
+                        f"  - {h.field} / {h.category}: {h.runs_seen}/{h.runs_considered} runs, "
+                        f"affected_pct {lo:.3f}-{hi:.3f} ({stability}), last severity={h.last_severity}"
+                    )
+                else:
+                    # Persistent only via repeated dismissals — no committed pct yet.
+                    # Look at DISMISSED PATTERNS for the corrective approach.
+                    lines.append(
+                        f"  - {h.field} / {h.category}: {h.runs_seen}/{h.runs_considered} runs "
+                        f"(repeatedly dismissed — see DISMISSED PATTERNS for the corrective query)"
+                    )
 
         one_off = self.one_off_findings[:max_findings]
         if one_off:
@@ -110,13 +138,23 @@ class HistoricalContext:
                     f"affected_pct={h.affected_pct_history[0]:.3f}, last severity={h.last_severity}"
                 )
 
-        if self.dismissed_pairs:
+        if self.dismissed_patterns:
             lines.append(
-                "\nDISMISSED PATTERNS (rejected by evaluators in prior runs — only re-propose"
-                " with stronger evidence than the previous attempt):"
+                "\nDISMISSED PATTERNS (rejected by evaluators in prior runs):"
             )
-            for f_path, cat in self.dismissed_pairs[:max_findings]:
-                lines.append(f"  - {f_path} / {cat}")
+            persistent_keys = {(h.field, h.category) for h in persistent}
+            for d in self.dismissed_patterns[:max_findings]:
+                lines.append(f"  - {d.field} / {d.category}")
+                if d.dismiss_reason:
+                    lines.append(f"      rejected because: {d.dismiss_reason[:240]}")
+                if d.critique:
+                    lines.append(f"      suggested correction: {d.critique[:280]}")
+                if (d.field, d.category) in persistent_keys:
+                    lines.append(
+                        "      NOTE: this pattern is also listed as PERSISTENT — the dismissal"
+                        " was a per-run evidence mistake; re-propose with the suggested correction"
+                        " applied (that IS qualitatively stronger evidence)."
+                    )
 
         return "\n".join(lines)
 

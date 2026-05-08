@@ -78,8 +78,16 @@ STRICT ORDERING — follow these phases in order; do not jump phases:
   Investigate suspicious-looking schema entries (high null rates, type mismatches, low cardinality,
   outlier values). This is where genuinely new issues live.
 
-NEVER re-propose a (field, category) from DISMISSED PATTERNS unless you have qualitatively
-stronger evidence than the original attempt — and say so explicitly in reasoning.
+DISMISSED PATTERNS — read the rejection reason and the suggested correction shown for each
+entry. Two cases:
+  (a) If a dismissed pattern is ALSO listed under PERSISTENT FINDINGS, the rejection was a
+      per-run evidence mistake on a real, recurring issue. RE-PROPOSE it with the suggested
+      correction applied (typically a different evidence_query — e.g. switching from null-only
+      to {"$or": [{"$exists": false}, ...]} when description claims null-or-missing). Doing so
+      counts as qualitatively stronger evidence and the gate will accept it. Skipping a
+      persistent+dismissed pattern is a real coverage failure.
+  (b) If a dismissed pattern is NOT in PERSISTENT FINDINGS, only re-propose if you have
+      qualitatively stronger evidence than the previous attempt — and say so in reasoning.
 
 If there is no HISTORICAL CONTEXT section, this is the first audit for this collection —
 do a thorough survey across all suspicious fields.
