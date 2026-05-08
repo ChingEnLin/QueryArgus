@@ -395,6 +395,27 @@ def _emit_report(report: AuditReport, output: str) -> None:
         for f in report.dismissed_findings:
             typer.echo(f"  - {f.field} / {f.category}: {f.description[:120]}")
 
+    if report.previous_run_id is not None:
+        typer.echo(
+            f"\nDIFF vs previous run {report.previous_run_id}:  "
+            f"new={len(report.new_findings)}  "
+            f"resolved={len(report.resolved_findings)}  "
+            f"regressed_fields={len(report.regressed_fields)}"
+        )
+        if report.new_findings:
+            typer.echo("  NEW:")
+            for f in report.new_findings:
+                typer.echo(
+                    f"    + [{f.severity.value}] {f.field} / {f.category} "
+                    f"(pct={f.affected_pct:.3f})"
+                )
+        if report.resolved_findings:
+            typer.echo("  RESOLVED:")
+            for f in report.resolved_findings:
+                typer.echo(f"    - [{f.severity.value}] {f.field} / {f.category}")
+        if report.regressed_fields:
+            typer.echo("  REGRESSED FIELDS: " + ", ".join(report.regressed_fields))
+
 
 def _safe_list_reports(
     store: ReportStore,

@@ -59,14 +59,30 @@ CALIBRATION RULES — the evaluator enforces these
 - If the evaluator returns a critique, apply it on your NEXT action — don't argue.
 
 USING HISTORICAL CONTEXT
-If the user prompt contains a "HISTORICAL CONTEXT" section, treat it as a strong prior from previous audits of this exact collection. Use it to spend the iteration budget where it matters:
+If the user prompt contains a "HISTORICAL CONTEXT" section, treat it as a strong prior from previous audits of this exact collection.
 
-- PERSISTENT FINDINGS (seen in 2+ prior runs): these are very likely real. Confirm each with a single targeted run_query to get the current affected_count, then write_finding to commit. ONE run_query + ONE write_finding per persistent finding — do NOT re-derive them from scratch. If the historical range is "stable", just confirm. If "DRIFTING", note that the situation is changing.
-- ONE-OFF FINDINGS (seen once before): treat as suspect. A single targeted query confirms or dismisses. If you confirm it, write the finding. If the count is now zero, treat it as resolved and move on.
-- DISMISSED PATTERNS: these were rejected by an evaluator before. Do NOT re-propose the same (field, category) pair unless you have qualitatively stronger evidence than the previous attempt — and explicitly say so in your reasoning.
-- After handling the historical findings, prioritise BREADTH: investigate fields the schema sample shows as suspicious that have NOT appeared in any historical finding. That's where new issues live.
+STRICT ORDERING — follow these phases in order; do not jump phases:
 
-If there is no HISTORICAL CONTEXT section, this is the first audit for this collection — do a thorough survey.
+  PHASE 1 (always first): one schema_sample call to get current shape.
+
+  PHASE 2 (mandatory before phase 3): for EVERY PERSISTENT FINDING listed, do exactly TWO actions —
+  one run_query (with the same evidence_query shape from history) and one write_finding to commit.
+  These are the highest-confidence work in the run. Do them ALL before any other investigation,
+  even if budget is tight. If you skip a persistent finding, you are wasting the historical
+  context that was given to you.
+
+  PHASE 3: for each ONE-OFF FINDING, run a targeted query. If the count is non-zero, write_finding.
+  If zero, move on (it was resolved or sample noise).
+
+  PHASE 4: only now, with whatever budget remains, explore fields not in any historical finding.
+  Investigate suspicious-looking schema entries (high null rates, type mismatches, low cardinality,
+  outlier values). This is where genuinely new issues live.
+
+NEVER re-propose a (field, category) from DISMISSED PATTERNS unless you have qualitatively
+stronger evidence than the original attempt — and say so explicitly in reasoning.
+
+If there is no HISTORICAL CONTEXT section, this is the first audit for this collection —
+do a thorough survey across all suspicious fields.
 
 GOOD INVESTIGATIONS (for calibration, not exact templates)
 - A field shows >5% null_rate on a non-optional-looking field → run_query with {"<field>": null}, then write_finding category=null_rate.
