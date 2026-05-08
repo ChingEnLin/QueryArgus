@@ -58,6 +58,16 @@ CALIBRATION RULES — the evaluator enforces these
 - Don't call run_query / get_stats / write_finding before you've called schema_sample at least once.
 - If the evaluator returns a critique, apply it on your NEXT action — don't argue.
 
+USING HISTORICAL CONTEXT
+If the user prompt contains a "HISTORICAL CONTEXT" section, treat it as a strong prior from previous audits of this exact collection. Use it to spend the iteration budget where it matters:
+
+- PERSISTENT FINDINGS (seen in 2+ prior runs): these are very likely real. Confirm each with a single targeted run_query to get the current affected_count, then write_finding to commit. ONE run_query + ONE write_finding per persistent finding — do NOT re-derive them from scratch. If the historical range is "stable", just confirm. If "DRIFTING", note that the situation is changing.
+- ONE-OFF FINDINGS (seen once before): treat as suspect. A single targeted query confirms or dismisses. If you confirm it, write the finding. If the count is now zero, treat it as resolved and move on.
+- DISMISSED PATTERNS: these were rejected by an evaluator before. Do NOT re-propose the same (field, category) pair unless you have qualitatively stronger evidence than the previous attempt — and explicitly say so in your reasoning.
+- After handling the historical findings, prioritise BREADTH: investigate fields the schema sample shows as suspicious that have NOT appeared in any historical finding. That's where new issues live.
+
+If there is no HISTORICAL CONTEXT section, this is the first audit for this collection — do a thorough survey.
+
 GOOD INVESTIGATIONS (for calibration, not exact templates)
 - A field shows >5% null_rate on a non-optional-looking field → run_query with {"<field>": null}, then write_finding category=null_rate.
 - A numeric field has int+float types mixed → almost always benign serialization noise; do NOT write a finding unless there's evidence of actual data corruption.

@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 import typer
 
 if TYPE_CHECKING:
+    from queryargus.models.history import HistoricalContext
     from queryargus.storage import ReportStore
     from queryargus.storage.postgres import ReportSummary
 
@@ -241,7 +242,9 @@ def run(
         judge_llm=judge_llm,
         judge_model_name=judge_model,
     )
-    report = agent.run(connection=connection, collection=collection)
+
+    history = _load_history(persist_url, collection=collection, database=database) if persist_url else None
+    report = agent.run(connection=connection, collection=collection, history=history)
 
     if persist_url:
         report = _persist_and_diff(report, persist_url)
@@ -432,6 +435,31 @@ def _validate_postgres_url(value: str | None, *, required: bool) -> str | None:
         )
         raise typer.Exit(code=2)
     return url
+
+
+def _load_history(
+    postgres_url: str,
+    *,
+    collection: str,
+    database: str,
+    limit: int = 5,
+) -> HistoricalContext | None:
+    """Load cross-run memory for the agent. Returns None on connection failure."""
+    import psycopg2  # noqa: PLC0415
+
+    from queryargus.storage import ReportStore  # noqa: PLC0415
+
+    store = ReportStore(postgres_url)
+    try:
+        store.init_schema()  # idempotent — covers the first-run-ever case
+        return store.load_history(collection=collection, database=database, limit=limit)
+    except psycopg2.OperationalError as exc:
+        typer.secho(
+            f"Could not load historical context (continuing without): {exc}".strip(),
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+        return None
 
 
 def _persist_and_diff(report: AuditReport, postgres_url: str) -> AuditReport:

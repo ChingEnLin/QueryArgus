@@ -15,6 +15,7 @@ from queryargus.llm.client import TokenUsage
 from queryargus.models.action import AgentAction
 from queryargus.models.evaluation import EvaluationRecord
 from queryargus.models.finding import Finding
+from queryargus.models.history import HistoricalContext
 from queryargus.tools.schema_sample import FieldStats, SchemaSampleResult
 from queryargus.tools.write_finding import FindingsCollector
 
@@ -51,6 +52,8 @@ class AgentState:
 
     total_usage: TokenUsage = field(default_factory=TokenUsage)
     usage_per_iteration: list[TokenUsage] = field(default_factory=list)
+
+    historical_context: HistoricalContext | None = None
 
     @property
     def remaining_budget(self) -> int:
@@ -101,6 +104,10 @@ class AgentState:
                 )
             if len(self.schema.fields) > _FIELD_DISPLAY_LIMIT:
                 lines.append(f"  ... ({len(self.schema.fields) - _FIELD_DISPLAY_LIMIT} more not shown)")
+
+        if self.historical_context is not None and not self.historical_context.is_empty:
+            lines.append("")
+            lines.append(self.historical_context.render())
 
         if self.queries_run:
             lines.append(f"\nQUERIES RUN ({len(self.queries_run)}):")

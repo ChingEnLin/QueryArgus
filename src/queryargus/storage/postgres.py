@@ -27,6 +27,7 @@ from psycopg2.extras import Json, RealDictCursor
 
 from queryargus.models.evaluation import EvaluationRecord
 from queryargus.models.finding import Finding
+from queryargus.models.history import FindingHistory, HistoricalContext, empty_history
 from queryargus.models.report import AuditReport
 
 logger = logging.getLogger(__name__)
@@ -188,6 +189,86 @@ class ReportStore:
             )
             for row in rows
         ]
+
+    def load_history(
+        self,
+        *,
+        collection: str,
+        database: str,
+        limit: int = 5,
+    ) -> HistoricalContext:
+        """Aggregate the last ``limit`` runs into a ``HistoricalContext``.
+
+        Returns an empty context when no prior runs exist for the
+        ``(collection, database)`` pair. The agent reads this at run start to
+        avoid rediscovering known issues from scratch.
+        """
+        with self._connect() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, run_at FROM argus_reports
+                WHERE collection = %s AND database = %s
+                ORDER BY run_at DESC LIMIT %s
+                """,
+                (collection, database, limit),
+            )
+            runs = cur.fetchall()
+            if not runs:
+                return empty_history()
+
+            run_ids = [str(r["id"]) for r in runs]
+            last_run_at = runs[0]["run_at"]
+
+            cur.execute(
+                """
+                SELECT f.field, f.category, f.severity, f.affected_pct, r.run_at
+                FROM argus_findings f
+                JOIN argus_reports r ON f.report_id = r.id
+                WHERE f.report_id::text = ANY(%s)
+                ORDER BY r.run_at DESC
+                """,
+                (run_ids,),
+            )
+            finding_rows = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT DISTINCT field, category
+                FROM argus_dismissed_findings
+                WHERE report_id::text = ANY(%s)
+                """,
+                (run_ids,),
+            )
+            dismissed_rows = cur.fetchall()
+
+        runs_considered = len(runs)
+        by_key: dict[tuple[str, str], list[Any]] = {}
+        for row in finding_rows:
+            key = (str(row["field"]), str(row["category"]))
+            by_key.setdefault(key, []).append(row)
+
+        histories = [
+            FindingHistory(
+                field=k[0],
+                category=k[1],
+                runs_considered=runs_considered,
+                runs_seen=len(rows),
+                severity_history=[str(r["severity"]) for r in rows],
+                affected_pct_history=[float(r["affected_pct"]) for r in rows],
+                last_seen_run_at=rows[0]["run_at"],
+            )
+            for k, rows in by_key.items()
+        ]
+        histories.sort(key=lambda h: (-h.runs_seen, -h.last_seen_run_at.timestamp()))
+
+        dismissed = [(str(r["field"]), str(r["category"])) for r in dismissed_rows]
+
+        return HistoricalContext(
+            runs_considered=runs_considered,
+            last_run_at=last_run_at,
+            finding_histories=histories,
+            dismissed_pairs=dismissed,
+        )
 
     def get_previous(
         self,

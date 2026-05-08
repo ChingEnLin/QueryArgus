@@ -51,6 +51,7 @@ from queryargus.models.evaluation import (
     EvaluationVerdict,
 )
 from queryargus.models.finding import Finding, FindingSeverity
+from queryargus.models.history import HistoricalContext
 from queryargus.models.report import AuditReport
 from queryargus.tools.get_stats import get_stats
 from queryargus.tools.run_query import run_query
@@ -110,7 +111,13 @@ class ArgusAgent:
             ),
         )
 
-    def run(self, connection: CosmosConnection, collection: str) -> AuditReport:
+    def run(
+        self,
+        connection: CosmosConnection,
+        collection: str,
+        *,
+        history: HistoricalContext | None = None,
+    ) -> AuditReport:
         started = time.time()
         state = AgentState(
             collection=collection,
@@ -118,7 +125,16 @@ class ArgusAgent:
             cosmos_account=connection.cosmos_account,
             iteration_budget=self.config.max_iterations,
             collection_size=_safe_collection_size(connection, collection),
+            historical_context=history,
         )
+        if history is not None and not history.is_empty:
+            logger.info(
+                "loaded historical context: runs=%d persistent_findings=%d one_off=%d dismissed=%d",
+                history.runs_considered,
+                len(history.persistent_findings),
+                len(history.one_off_findings),
+                len(history.dismissed_pairs),
+            )
         planner = Planner(llm=self.llm)
         run_evaluation: EvaluationResult | None = None
         concluded = False
