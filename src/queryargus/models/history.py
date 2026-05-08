@@ -133,10 +133,16 @@ class HistoricalContext:
                 "\nONE-OFF FINDINGS (seen once — verify whether they persist or were sample noise):"
             )
             for h in one_off:
-                lines.append(
-                    f"  - {h.field} / {h.category}: 1/{h.runs_considered} runs, "
-                    f"affected_pct={h.affected_pct_history[0]:.3f}, last severity={h.last_severity}"
-                )
+                if h.has_committed_evidence:
+                    lines.append(
+                        f"  - {h.field} / {h.category}: 1/{h.runs_considered} runs, "
+                        f"affected_pct={h.affected_pct_history[0]:.3f}, last severity={h.last_severity}"
+                    )
+                else:
+                    lines.append(
+                        f"  - {h.field} / {h.category}: 1/{h.runs_considered} runs "
+                        f"(dismissed only — see DISMISSED PATTERNS)"
+                    )
 
         if self.dismissed_patterns:
             lines.append(
