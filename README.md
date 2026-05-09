@@ -13,8 +13,8 @@ It is a **library and CLI first**, with an optional thin FastAPI wrapper. It run
 
 ```
                         ┌─────────────────────────────────┐
-                        │          ArgusAgent.run()        │
-                        │                                  │
+                        │          ArgusAgent.run()       │
+                        │                                 │
                         │  ┌───────────────────────────┐  │
                         │  │   ReAct Loop (≤20 iters)  │  │
                         │  │                           │  │
@@ -24,9 +24,9 @@ It is a **library and CLI first**, with an optional thin FastAPI wrapper. It run
                         │  │  Finding Gate (evaluate)  │  │
                         │  │  Run Gate (evaluate)      │  │
                         │  └───────────────────────────┘  │
-                        │                                  │
+                        │                                 │
   Postgres (optional) ◄─│  AuditReport                    │
-  HistoricalContext ───► │  (findings, trace, eval audit)  │
+  HistoricalContext ───►│  (findings, trace, eval audit)  │
                         └─────────────────────────────────┘
 ```
 
