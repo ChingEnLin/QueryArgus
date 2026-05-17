@@ -26,8 +26,14 @@ from psycopg2.extensions import connection as PGConnection
 from psycopg2.extras import Json, RealDictCursor
 
 from queryargus.models.evaluation import EvaluationRecord
-from queryargus.models.finding import Finding
-from queryargus.models.history import DismissedPattern, FindingHistory, HistoricalContext, empty_history
+from queryargus.models.finding import Finding, UserLabel
+from queryargus.models.history import (
+    DismissedPattern,
+    FindingHistory,
+    HistoricalContext,
+    UserVerdictHistory,
+    empty_history,
+)
 from queryargus.models.report import AuditReport
 
 logger = logging.getLogger(__name__)
@@ -259,6 +265,38 @@ class ReportStore:
             )
             dismissed_rows = cur.fetchall()
 
+            # User verdicts: load across ALL prior reports for this
+            # (collection, database), NOT just the windowed runs. A 'this
+            # finding is a false positive' verdict the user issued five
+            # months ago is still a stronger prior than no signal, and
+            # restricting to the recent window would silently drop it.
+            # Counts + most-recent label per (field, category).
+            cur.execute(
+                """
+                SELECT f.field, f.category,
+                       SUM(CASE WHEN f.user_label = 'tp' THEN 1 ELSE 0 END) AS tp_count,
+                       SUM(CASE WHEN f.user_label = 'fp' THEN 1 ELSE 0 END) AS fp_count,
+                       (
+                           SELECT f2.user_label
+                           FROM argus_findings f2
+                           JOIN argus_reports r2 ON f2.report_id = r2.id
+                           WHERE r2.collection = %s AND r2.database = %s
+                             AND f2.field = f.field AND f2.category = f.category
+                             AND f2.user_label IS NOT NULL
+                           ORDER BY r2.run_at DESC
+                           LIMIT 1
+                       ) AS last_label,
+                       MAX(r.run_at) AS last_labelled_at
+                FROM argus_findings f
+                JOIN argus_reports r ON f.report_id = r.id
+                WHERE r.collection = %s AND r.database = %s
+                  AND f.user_label IS NOT NULL
+                GROUP BY f.field, f.category
+                """,
+                (collection, database, collection, database),
+            )
+            verdict_rows = cur.fetchall()
+
         runs_considered = len(runs)
         # Group by (field, category). Track:
         #   - runs_seen = unique run_ids in which this pair appeared (committed or dismissed)
@@ -296,12 +334,76 @@ class ReportStore:
             for r in dismissed_rows
         ]
 
+        user_verdicts = [
+            UserVerdictHistory(
+                field=str(r["field"]),
+                category=str(r["category"]),
+                tp_count=int(r["tp_count"] or 0),
+                fp_count=int(r["fp_count"] or 0),
+                last_label=str(r["last_label"]),
+                last_labelled_at=r["last_labelled_at"],
+            )
+            for r in verdict_rows
+            if r["last_label"] is not None
+        ]
+
         return HistoricalContext(
             runs_considered=runs_considered,
             last_run_at=last_run_at,
             finding_histories=histories,
             dismissed_patterns=dismissed,
+            user_verdicts=user_verdicts,
         )
+
+    def update_user_label(
+        self,
+        *,
+        report_id: UUID,
+        finding_id: UUID,
+        label: UserLabel | None,
+    ) -> bool:
+        """Set (or clear) the human reviewer's verdict on a single finding.
+
+        Writes both the relational ``argus_findings.user_label`` column and
+        the matching entry inside ``argus_reports.raw_report`` JSONB so the
+        next ``get(report_id)`` reflects the verdict without a second query.
+
+        Returns ``True`` when a row was updated, ``False`` when the finding
+        does not exist or does not belong to ``report_id``.
+        """
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE argus_findings
+                SET user_label = %s
+                WHERE id = %s AND report_id = %s
+                """,
+                (label, str(finding_id), str(report_id)),
+            )
+            if cur.rowcount == 0:
+                return False
+            # Mirror into raw_report so a subsequent get() sees the verdict
+            # without an extra join. Findings are an array — mutate by id.
+            cur.execute(
+                "SELECT raw_report FROM argus_reports WHERE id = %s",
+                (str(report_id),),
+            )
+            row: Any = cur.fetchone()
+            if row is None:
+                return True  # relational row updated but raw_report missing — odd but tolerable
+            raw: Any = row[0]
+            if isinstance(raw, str):
+                raw = json.loads(raw)
+            target_id = str(finding_id)
+            for entry in raw.get("findings", []):
+                if entry.get("id") == target_id:
+                    entry["user_label"] = label
+                    break
+            cur.execute(
+                "UPDATE argus_reports SET raw_report = %s WHERE id = %s",
+                (Json(raw), str(report_id)),
+            )
+        return True
 
     def get_previous(
         self,
@@ -368,13 +470,15 @@ def _insert_finding(
         """
         INSERT INTO argus_findings (
             id, report_id, field, category, severity, description, hypothesis,
-            evidence_query, affected_count, affected_pct, sample_values, confirmed
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            evidence_query, affected_count, affected_pct, sample_values, confirmed,
+            user_label
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             str(f.id), report_id, f.field, f.category, f.severity.value, f.description, f.hypothesis,
             f.evidence_query, f.affected_count, f.affected_pct,
             Json(_jsonable_list(f.sample_values)), f.confirmed,
+            f.user_label,
         ),
     )
 

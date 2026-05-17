@@ -19,6 +19,7 @@ from queryargus.models.history import (
     DismissedPattern,
     FindingHistory,
     HistoricalContext,
+    UserVerdictHistory,
     empty_history,
 )
 from queryargus.storage import ReportStore
@@ -226,6 +227,8 @@ def test_load_history_aggregates_findings_across_runs(monkeypatch: pytest.Monkey
                     "created_at": now,
                 }
             ],
+            # 4) user-verdict query — no labelled findings in this scenario
+            [],
         ]
     )
     monkeypatch.setattr(
@@ -274,6 +277,221 @@ def test_load_history_empty_when_no_runs(monkeypatch: pytest.MonkeyPatch) -> Non
     store = ReportStore(dsn="postgresql://fake/fake")
     ctx = store.load_history(collection="x", database="y")
     assert ctx.is_empty
+
+
+# ---------------------------------------------------------------------------
+# User verdicts (Arm A — post-hoc rating)
+# ---------------------------------------------------------------------------
+
+def test_user_verdict_net_label() -> None:
+    tp_dominant = UserVerdictHistory(
+        field="email", category="null_rate",
+        tp_count=3, fp_count=1, last_label="tp",
+        last_labelled_at=datetime(2026, 5, 1, tzinfo=UTC),
+    )
+    assert tp_dominant.net_label == "tp"
+
+    fp_dominant = UserVerdictHistory(
+        field="cohort", category="enum_violation",
+        tp_count=0, fp_count=2, last_label="fp",
+        last_labelled_at=datetime(2026, 5, 1, tzinfo=UTC),
+    )
+    assert fp_dominant.net_label == "fp"
+
+    mixed = UserVerdictHistory(
+        field="other", category="type_drift",
+        tp_count=1, fp_count=1, last_label="fp",
+        last_labelled_at=datetime(2026, 5, 1, tzinfo=UTC),
+    )
+    assert mixed.net_label is None
+
+
+def test_render_annotates_persistent_with_user_verdict() -> None:
+    """A persistent FP-net (field, category) must be tagged inline in the prompt."""
+    persistent = FindingHistory(
+        field="cohort", category="enum_violation",
+        runs_considered=4, runs_seen=4,
+        severity_history=["medium"] * 4,
+        affected_pct_history=[0.05, 0.05, 0.05, 0.05],
+        last_seen_run_at=datetime(2026, 5, 1, tzinfo=UTC),
+    )
+    ctx = HistoricalContext(
+        runs_considered=4,
+        last_run_at=datetime(2026, 5, 1, tzinfo=UTC),
+        finding_histories=[persistent],
+        user_verdicts=[
+            UserVerdictHistory(
+                field="cohort", category="enum_violation",
+                tp_count=0, fp_count=3, last_label="fp",
+                last_labelled_at=datetime(2026, 5, 1, tzinfo=UTC),
+            )
+        ],
+    )
+    rendered = ctx.render()
+    # Inline suffix on the persistent line — the planner reads top-down, so this is
+    # the load-bearing place to surface the FP signal.
+    assert "USER-MARKED FP" in rendered
+    assert "require stronger evidence" in rendered
+
+
+def test_render_includes_orphan_user_verdicts_block() -> None:
+    """Verdicts on (field, category) NOT in this run's findings/dismissed must still surface."""
+    ctx = HistoricalContext(
+        runs_considered=2,
+        last_run_at=datetime(2026, 5, 1, tzinfo=UTC),
+        finding_histories=[],
+        dismissed_patterns=[],
+        user_verdicts=[
+            UserVerdictHistory(
+                field="archived_at", category="stale_timestamp",
+                tp_count=2, fp_count=0, last_label="tp",
+                last_labelled_at=datetime(2026, 5, 1, tzinfo=UTC),
+            )
+        ],
+    )
+    rendered = ctx.render()
+    assert "USER VERDICTS on prior findings not surfaced" in rendered
+    assert "archived_at / stale_timestamp" in rendered
+    assert "net=tp" in rendered
+
+
+def test_load_history_includes_user_verdicts(monkeypatch: pytest.MonkeyPatch) -> None:
+    rid = uuid4()
+    now = datetime(2026, 5, 1, tzinfo=UTC)
+    cursor = _FakeCursor(
+        scripted=[
+            # 1) last-N runs
+            [{"id": rid, "run_at": now}],
+            # 2) findings UNION dismissed — empty so we can isolate verdict path
+            [],
+            # 3) latest-dismissal-per-key — empty
+            [],
+            # 4) user-verdict query
+            [
+                {
+                    "field": "cohort",
+                    "category": "enum_violation",
+                    "tp_count": 1,
+                    "fp_count": 3,
+                    "last_label": "fp",
+                    "last_labelled_at": now,
+                },
+                {
+                    "field": "archived_at",
+                    "category": "stale_timestamp",
+                    "tp_count": 2,
+                    "fp_count": 0,
+                    "last_label": "tp",
+                    "last_labelled_at": now,
+                },
+            ],
+        ]
+    )
+    monkeypatch.setattr(
+        "queryargus.storage.postgres.psycopg2.connect",
+        lambda *_a, **_kw: _FakeConn(cursor),
+    )
+    store = ReportStore(dsn="postgresql://fake/fake")
+    ctx = store.load_history(collection="users", database="db")
+
+    assert len(ctx.user_verdicts) == 2
+    by_field = {v.field: v for v in ctx.user_verdicts}
+    assert by_field["cohort"].net_label == "fp"
+    assert by_field["cohort"].fp_count == 3
+    assert by_field["archived_at"].net_label == "tp"
+    assert by_field["archived_at"].tp_count == 2
+
+
+def test_update_user_label_writes_relational_and_raw_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sets argus_findings.user_label AND patches the matching entry in raw_report JSONB."""
+    report_id, finding_id = uuid4(), uuid4()
+
+    class _UpdateCursor:
+        def __init__(self) -> None:
+            self.executed: list[tuple[str, tuple[Any, ...]]] = []
+            self.rowcount = 0
+            self._select_raw = {
+                "findings": [
+                    {"id": str(finding_id), "user_label": None, "field": "f"},
+                    {"id": str(uuid4()), "user_label": None, "field": "other"},
+                ]
+            }
+            self._next_one: Any = None
+
+        def execute(self, sql: str, args: Any = ()) -> None:
+            self.executed.append((sql, tuple(args) if isinstance(args, list | tuple) else (args,)))
+            if sql.strip().startswith("UPDATE argus_findings"):
+                self.rowcount = 1
+            elif sql.strip().startswith("SELECT raw_report"):
+                # psycopg2 returns a tuple here (we don't use RealDictCursor on this path)
+                self._next_one = (self._select_raw,)
+            elif sql.strip().startswith("UPDATE argus_reports"):
+                # capture so the assertion below can inspect the patched JSONB
+                pass
+
+        def fetchone(self) -> Any | None:
+            value, self._next_one = self._next_one, None
+            return value
+
+        def __enter__(self) -> _UpdateCursor:
+            return self
+
+        def __exit__(self, *exc: Any) -> None:
+            return None
+
+    cursor = _UpdateCursor()
+    monkeypatch.setattr(
+        "queryargus.storage.postgres.psycopg2.connect",
+        lambda *_a, **_kw: _FakeConn(cursor),  # type: ignore[arg-type]
+    )
+
+    store = ReportStore(dsn="postgresql://fake/fake")
+    ok = store.update_user_label(report_id=report_id, finding_id=finding_id, label="fp")
+    assert ok is True
+    # raw_report mutation applied in place before the UPDATE.
+    target = next(f for f in cursor._select_raw["findings"] if f["id"] == str(finding_id))
+    assert target["user_label"] == "fp"
+    # Other findings untouched.
+    other = next(f for f in cursor._select_raw["findings"] if f["id"] != str(finding_id))
+    assert other["user_label"] is None
+    sqls = [sql.strip().split()[0:3] for sql, _ in cursor.executed]
+    # Sequence: UPDATE argus_findings → SELECT raw_report → UPDATE argus_reports
+    assert sqls[0][:2] == ["UPDATE", "argus_findings"]
+    assert sqls[1][:2] == ["SELECT", "raw_report"]
+    assert sqls[2][:2] == ["UPDATE", "argus_reports"]
+
+
+def test_update_user_label_returns_false_when_finding_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _MissCursor:
+        def __init__(self) -> None:
+            self.executed: list[Any] = []
+            self.rowcount = 0  # UPDATE matches nothing
+
+        def execute(self, sql: str, args: Any = ()) -> None:
+            self.executed.append((sql, args))
+
+        def fetchone(self) -> Any:
+            return None
+
+        def __enter__(self) -> _MissCursor:
+            return self
+
+        def __exit__(self, *exc: Any) -> None:
+            return None
+
+    cursor = _MissCursor()
+    monkeypatch.setattr(
+        "queryargus.storage.postgres.psycopg2.connect",
+        lambda *_a, **_kw: _FakeConn(cursor),  # type: ignore[arg-type]
+    )
+    store = ReportStore(dsn="postgresql://fake/fake")
+    assert store.update_user_label(report_id=uuid4(), finding_id=uuid4(), label="tp") is False
+    # Only the relational UPDATE should fire; the raw_report path is short-circuited.
+    assert len(cursor.executed) == 1
 
 
 # ---------------------------------------------------------------------------

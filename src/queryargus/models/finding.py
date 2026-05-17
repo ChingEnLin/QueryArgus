@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
+
+UserLabel = Literal["tp", "fp"]
 
 
 class FindingSeverity(StrEnum):
@@ -36,3 +38,6 @@ class Finding(BaseModel):
     affected_pct: float = Field(ge=0.0, le=1.0)
     sample_values: list[Any] = Field(default_factory=list, max_length=5)
     confirmed: bool = True
+    # Optional post-hoc verdict from a human reviewer. Drives cross-run
+    # learning via UserVerdictHistory; never set by the agent itself.
+    user_label: UserLabel | None = None

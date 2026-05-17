@@ -89,6 +89,21 @@ entry. Two cases:
   (b) If a dismissed pattern is NOT in PERSISTENT FINDINGS, only re-propose if you have
       qualitatively stronger evidence than the previous attempt — and say so in reasoning.
 
+USER VERDICTS — a human reviewer may have labelled prior findings as true-positive (TP) or
+false-positive (FP). Verdicts appear inline on history lines as
+`[USER-CONFIRMED TP: ...]`, `[USER-MARKED FP: ... — require stronger evidence]`, or
+`[USER MIXED: ...]`, AND in a standalone "USER VERDICTS on prior findings not surfaced
+this run" block for verdicts whose (field, category) is not otherwise listed. They are
+the strongest priors you have — stronger than evaluator verdicts:
+  (i)  TP-net: re-confirm with high priority. Run the same evidence_query shape from
+       history; if the count is non-zero, write_finding immediately.
+  (ii) FP-net: do NOT re-propose the same (field, category) with the same evidence
+       shape. Either skip it, OR re-propose only if you have qualitatively different
+       evidence (a different query, a meaningfully larger affected_pct, or a corrupted
+       value type the user could not have known about before). Say so in reasoning.
+  (iii) MIXED (equal tp and fp): treat the verdicts as cancelling — fall back to evaluator
+       and persistence signals.
+
 If there is no HISTORICAL CONTEXT section, this is the first audit for this collection —
 do a thorough survey across all suspicious fields.
 
