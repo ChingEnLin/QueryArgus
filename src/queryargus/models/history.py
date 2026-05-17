@@ -75,6 +75,36 @@ class DismissedPattern:
 
 
 @dataclass(frozen=True)
+class UserVerdictHistory:
+    """How a human reviewer has labelled a ``(field, category)`` across prior runs.
+
+    Populated when ``argus_findings.user_label`` is set on any earlier report
+    for the same ``(collection, database)``. The planner uses this as a
+    strong prior:
+
+    - ``net_label == "fp"`` → require ≥2× stronger evidence or skip;
+    - ``net_label == "tp"`` → re-confirm with high priority;
+    - mixed / ``None``  → treat like an unlabelled finding.
+    """
+
+    field: str
+    category: str
+    tp_count: int
+    fp_count: int
+    last_label: str  # 'tp' | 'fp' — the most recent verdict
+    last_labelled_at: datetime
+
+    @property
+    def net_label(self) -> str | None:
+        """Aggregate label: 'tp' when TPs dominate, 'fp' when FPs dominate, else None."""
+        if self.tp_count > self.fp_count:
+            return "tp"
+        if self.fp_count > self.tp_count:
+            return "fp"
+        return None
+
+
+@dataclass(frozen=True)
 class HistoricalContext:
     """Aggregate view of recent audit runs for one ``(collection, database)``."""
 
@@ -82,6 +112,7 @@ class HistoricalContext:
     last_run_at: datetime | None
     finding_histories: list[FindingHistory] = field(default_factory=list)
     dismissed_patterns: list[DismissedPattern] = field(default_factory=list)
+    user_verdicts: list[UserVerdictHistory] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
@@ -100,6 +131,19 @@ class HistoricalContext:
         if self.is_empty:
             return ""
 
+        verdict_by_key = {(v.field, v.category): v for v in self.user_verdicts}
+
+        def _verdict_suffix(field_name: str, category: str) -> str:
+            v = verdict_by_key.get((field_name, category))
+            if v is None:
+                return ""
+            net = v.net_label
+            if net == "tp":
+                return f" [USER-CONFIRMED TP: tp={v.tp_count} fp={v.fp_count}]"
+            if net == "fp":
+                return f" [USER-MARKED FP: tp={v.tp_count} fp={v.fp_count} — require stronger evidence]"
+            return f" [USER MIXED: tp={v.tp_count} fp={v.fp_count}]"
+
         lines: list[str] = [
             f"HISTORICAL CONTEXT (from last {self.runs_considered} audits, "
             f"most recent {self.last_run_at.isoformat() if self.last_run_at else 'unknown'}):"
@@ -112,12 +156,14 @@ class HistoricalContext:
                 " and re-commit; don't rediscover):"
             )
             for h in persistent:
+                suffix = _verdict_suffix(h.field, h.category)
                 if h.has_committed_evidence:
                     lo, hi = h.affected_pct_range
                     stability = "stable" if h.is_stable else "DRIFTING"
                     lines.append(
                         f"  - {h.field} / {h.category}: {h.runs_seen}/{h.runs_considered} runs, "
                         f"affected_pct {lo:.3f}-{hi:.3f} ({stability}), last severity={h.last_severity}"
+                        f"{suffix}"
                     )
                 else:
                     # Persistent only via repeated dismissals — no committed pct yet.
@@ -125,6 +171,7 @@ class HistoricalContext:
                     lines.append(
                         f"  - {h.field} / {h.category}: {h.runs_seen}/{h.runs_considered} runs "
                         f"(repeatedly dismissed — see DISMISSED PATTERNS for the corrective query)"
+                        f"{suffix}"
                     )
 
         one_off = self.one_off_findings[:max_findings]
@@ -133,15 +180,18 @@ class HistoricalContext:
                 "\nONE-OFF FINDINGS (seen once — verify whether they persist or were sample noise):"
             )
             for h in one_off:
+                suffix = _verdict_suffix(h.field, h.category)
                 if h.has_committed_evidence:
                     lines.append(
                         f"  - {h.field} / {h.category}: 1/{h.runs_considered} runs, "
                         f"affected_pct={h.affected_pct_history[0]:.3f}, last severity={h.last_severity}"
+                        f"{suffix}"
                     )
                 else:
                     lines.append(
                         f"  - {h.field} / {h.category}: 1/{h.runs_considered} runs "
                         f"(dismissed only — see DISMISSED PATTERNS)"
+                        f"{suffix}"
                     )
 
         if self.dismissed_patterns:
@@ -161,6 +211,28 @@ class HistoricalContext:
                         " was a per-run evidence mistake; re-propose with the suggested correction"
                         " applied (that IS qualitatively stronger evidence)."
                     )
+
+        # Standalone USER VERDICTS block — covers labelled (field, category)
+        # pairs that did NOT recur in the loaded findings/dismissed sets (so
+        # they would otherwise be invisible to the planner this run).
+        seen_in_findings = {(h.field, h.category) for h in self.finding_histories}
+        seen_in_dismissed = {(d.field, d.category) for d in self.dismissed_patterns}
+        orphan_verdicts = [
+            v for v in self.user_verdicts
+            if (v.field, v.category) not in seen_in_findings
+            and (v.field, v.category) not in seen_in_dismissed
+        ]
+        if orphan_verdicts:
+            lines.append(
+                "\nUSER VERDICTS on prior findings not surfaced this run (apply as a strong prior"
+                " if you re-encounter the same field+category):"
+            )
+            for v in orphan_verdicts[:max_findings]:
+                net = v.net_label or "MIXED"
+                lines.append(
+                    f"  - {v.field} / {v.category}: net={net} (tp={v.tp_count}, fp={v.fp_count}),"
+                    f" last={v.last_label} @ {v.last_labelled_at.isoformat()}"
+                )
 
         return "\n".join(lines)
 
