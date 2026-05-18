@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 UserLabel = Literal["tp", "fp"]
+FindingStatus = Literal["published", "pending_review", "dropped"]
 
 
 class FindingSeverity(StrEnum):
@@ -41,3 +42,11 @@ class Finding(BaseModel):
     # Optional post-hoc verdict from a human reviewer. Drives cross-run
     # learning via UserVerdictHistory; never set by the agent itself.
     user_label: UserLabel | None = None
+    # Arm B — self-assessment emitted by the agent at write_finding time.
+    # ``confidence`` is sourced from AgentAction.confidence; ``confidence_reason``
+    # mirrors AgentAction.reasoning. Both feed the EscalationFindingEvaluator.
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    confidence_reason: str | None = None
+    # Arm B — lifecycle marker. ``pending_review`` findings are persisted but
+    # excluded from the user-facing count until a human resolves them.
+    status: FindingStatus = "published"

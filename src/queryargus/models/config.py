@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from queryargus.models.finding import FindingSeverity
 
-EvaluatorStrategy = Literal["none", "rules", "self", "judge", "composite"]
+EvaluatorStrategy = Literal["none", "rules", "self", "judge", "composite", "escalation"]
 RejectedFindingPolicy = Literal["drop", "log_only", "demote_severity"]
 RunFailPolicy = Literal["continue", "warn_only", "abort"]
 OutputFormat = Literal["json", "text", "silent"]
@@ -33,6 +33,20 @@ class EvaluatorConfig(BaseModel):
 
     rejected_finding_policy: RejectedFindingPolicy = "log_only"
     run_fail_policy: RunFailPolicy = "continue"
+
+    # Arm B (self-escalation) — knobs are only consulted when
+    # ``finding_evaluator == "escalation"``. Defaults pulled from the plan.
+    escalation_high_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+    escalation_low_threshold: float = Field(default=0.40, ge=0.0, le=1.0)
+    escalation_cap: int = Field(
+        default=10,
+        ge=0,
+        description=(
+            "Maximum number of findings that may be parked in pending_review per run. "
+            "Once exceeded, further mid-confidence findings are dropped instead of escalated "
+            "so a single noisy run can't spam the human reviewer."
+        ),
+    )
 
 
 # Prebuilt profiles from spec §5.5

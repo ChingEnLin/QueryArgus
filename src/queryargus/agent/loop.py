@@ -29,6 +29,10 @@ from queryargus.agent.evaluation.base import (
     FindingEvaluator,
     RunEvaluator,
 )
+from queryargus.agent.evaluation.escalation import (
+    ESCALATION_DROPPED_SENTINEL,
+    ESCALATION_PENDING_SENTINEL,
+)
 from queryargus.agent.evaluation.factory import (
     build_action_evaluator,
     build_finding_evaluator,
@@ -331,6 +335,10 @@ def _commit_finding(action: AgentAction, state: AgentState, agent: ArgusAgent) -
     except ValueError:
         severity = FindingSeverity.MEDIUM
 
+    # Arm B — finding-level confidence is sourced from AgentAction.confidence
+    # (per-action field) and reason from AgentAction.reasoning. When the
+    # escalation evaluator is disabled these flow through untouched but are
+    # ignored.
     candidate = Finding(
         field=str(args.get("field", "")),
         category=str(args.get("category", "unknown")),
@@ -342,10 +350,20 @@ def _commit_finding(action: AgentAction, state: AgentState, agent: ArgusAgent) -
         affected_pct=affected_pct,
         sample_values=list(args.get("sample_values", [])[:5]),
         confirmed=bool(args.get("confirmed", True)),
+        confidence=action.confidence,
+        confidence_reason=action.reasoning,
     )
 
     verdict = agent._evaluate_finding(candidate, state)
     if verdict and verdict.verdict == EvaluationVerdict.FAIL:
+        # Escalation dropped findings ALWAYS drop, regardless of the
+        # configured rejected_finding_policy — they're "user wouldn't even
+        # want to see this", not "evaluator disagreed".
+        if verdict.evaluated_by == ESCALATION_DROPPED_SENTINEL:
+            state.last_observation = (
+                f"write_finding ESCALATION-DROPPED ({verdict.reason})"
+            )
+            return
         policy = agent.config.evaluation.rejected_finding_policy
         if policy == "drop":
             state.last_observation = f"write_finding REJECTED ({verdict.reason}); dropped"
@@ -362,6 +380,14 @@ def _commit_finding(action: AgentAction, state: AgentState, agent: ArgusAgent) -
                 f"write_finding severity demoted {severity.value}→{demoted.value} ({verdict.reason})"
             )
 
+    # Arm B — the escalation evaluator's PASS-with-pending sentinel asks the
+    # loop to persist the finding but mark it pending_review so the UI/queue
+    # can surface it for human resolution without inflating the published
+    # finding count.
+    status = "published"
+    if verdict and verdict.evaluated_by == ESCALATION_PENDING_SENTINEL:
+        status = "pending_review"
+
     fid: UUID = state.findings.write(
         field=candidate.field,
         category=candidate.category,
@@ -373,12 +399,21 @@ def _commit_finding(action: AgentAction, state: AgentState, agent: ArgusAgent) -
         affected_pct=candidate.affected_pct,
         sample_values=candidate.sample_values,
         confirmed=candidate.confirmed,
+        confidence=candidate.confidence,
+        confidence_reason=candidate.confidence_reason,
+        status=status,
     )
     state.fields_concluded.add(candidate.field)
     if state.last_observation is None or "REJECTED" not in state.last_observation:
-        state.last_observation = (
-            f"write_finding committed id={fid} field={candidate.field} category={candidate.category}"
-        )
+        if status == "pending_review":
+            state.last_observation = (
+                f"write_finding PENDING-REVIEW id={fid} field={candidate.field} "
+                f"category={candidate.category} confidence={candidate.confidence:.2f}"
+            )
+        else:
+            state.last_observation = (
+                f"write_finding committed id={fid} field={candidate.field} category={candidate.category}"
+            )
 
 
 def _demote(s: FindingSeverity) -> FindingSeverity:

@@ -58,6 +58,19 @@ CALIBRATION RULES — the evaluator enforces these
 - Don't call run_query / get_stats / write_finding before you've called schema_sample at least once.
 - If the evaluator returns a critique, apply it on your NEXT action — don't argue.
 
+CONFIDENCE — set ``confidence`` honestly per action; for write_finding it doubles as the
+self-assessment the escalation gate (when enabled) uses to route findings:
+- 0.85-1.00: unambiguous issue, evidence_query returned a strict-non-zero count, the
+  observation cannot reasonably be sample noise or legitimate optional data.
+- 0.60-0.84: real issue but borderline — either the affected_pct is right at a threshold,
+  the field plausibly *could* be optional, or you sampled a small enough slice that
+  randomness is plausible. With escalation enabled, findings in this band are queued
+  for human review instead of published; with the gate off, the evaluator decides.
+- 0.40-0.59: weak signal — only worth writing if you have no stronger candidate. Almost
+  always pending_review when the escalation gate is on.
+- below 0.40: do NOT write_finding. Either gather more evidence (run_query / get_stats)
+  or skip the field entirely. The escalation gate drops these outright to avoid noise.
+
 USING HISTORICAL CONTEXT
 If the user prompt contains a "HISTORICAL CONTEXT" section, treat it as a strong prior from previous audits of this exact collection.
 

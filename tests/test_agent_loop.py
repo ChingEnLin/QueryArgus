@@ -167,3 +167,105 @@ def test_agent_terminates_on_budget_exhaustion(dirty_connection: CosmosConnectio
     assert len(report.run_trace) == 4
     # And a run gate verdict was produced.
     assert report.run_evaluation is not None
+
+
+# ---------------------------------------------------------------------------
+# Arm B — self-escalation gate routes findings by confidence
+# ---------------------------------------------------------------------------
+
+def test_escalation_gate_parks_mid_confidence_finding_pending_review(
+    dirty_connection: CosmosConnection,
+) -> None:
+    """A mid-confidence write_finding should land in the ledger with status='pending_review'."""
+    actions = [
+        AgentAction(reasoning="survey", action="schema_sample", action_input={"sample_size": 30}, confidence=0.95),
+        AgentAction(
+            reasoning="email null rate looks high; confirm",
+            action="run_query",
+            action_input={"filter": {"email": None}},
+            confidence=0.9,
+        ),
+        AgentAction(
+            reasoning="commit but I'm not fully sure email isn't intentionally optional",
+            action="write_finding",
+            action_input={
+                "field": "email", "category": "null_rate", "severity": "high",
+                "description": "Email is null on a meaningful fraction of users.",
+                "hypothesis": "Optional-by-design vs broken signup.",
+                "evidence_query": '{"email": null}',
+                "affected_count": 30, "affected_pct": 0.30,
+                "sample_values": [None],
+            },
+            # mid-confidence: lands in escalation band [0.4, 0.85)
+            confidence=0.6,
+        ),
+        AgentAction(reasoning="done", action="conclude", action_input={}, confidence=1.0),
+    ]
+    llm = ScriptedLLMClient(actions)
+    agent = ArgusAgent.from_config(
+        config=ArgusConfig(
+            sample_size=30,
+            max_iterations=6,
+            evaluation={
+                "action_evaluator": "rules",
+                "finding_evaluator": "escalation",
+                "run_evaluator": "rules",
+                "escalation_high_threshold": 0.85,
+                "escalation_low_threshold": 0.40,
+            },
+        ),
+        llm=llm,
+    )
+    report = agent.run(connection=dirty_connection, collection="users")
+    pending = [f for f in report.findings if f.status == "pending_review"]
+    assert len(pending) == 1, f"expected one pending_review finding, got {report.findings!r}"
+    assert pending[0].field == "email"
+    assert pending[0].category == "null_rate"
+    assert pending[0].confidence == 0.6
+
+
+def test_escalation_gate_drops_low_confidence_finding(dirty_connection: CosmosConnection) -> None:
+    """confidence < low_threshold should hard-drop regardless of rejected_finding_policy."""
+    actions = [
+        AgentAction(reasoning="survey", action="schema_sample", action_input={"sample_size": 30}, confidence=0.95),
+        AgentAction(
+            reasoning="quick check",
+            action="run_query",
+            action_input={"filter": {"email": None}},
+            confidence=0.9,
+        ),
+        AgentAction(
+            reasoning="not sure at all",
+            action="write_finding",
+            action_input={
+                "field": "email", "category": "null_rate", "severity": "low",
+                "description": "Maybe a null-rate issue?",
+                "hypothesis": "unclear",
+                "evidence_query": '{"email": null}',
+                "affected_count": 30, "affected_pct": 0.30,
+            },
+            confidence=0.2,  # below low_threshold
+        ),
+        AgentAction(reasoning="done", action="conclude", action_input={}, confidence=1.0),
+    ]
+    llm = ScriptedLLMClient(actions)
+    agent = ArgusAgent.from_config(
+        config=ArgusConfig(
+            sample_size=30,
+            max_iterations=6,
+            evaluation={
+                "action_evaluator": "rules",
+                "finding_evaluator": "escalation",
+                "run_evaluator": "rules",
+                # log_only would normally add it to dismissed_findings — escalation
+                # drops bypass that, so we should see neither published NOR dismissed.
+                "rejected_finding_policy": "log_only",
+            },
+        ),
+        llm=llm,
+    )
+    report = agent.run(connection=dirty_connection, collection="users")
+    assert report.findings == []
+    # Escalation hard-drops short-circuit the dismissal path, so the finding does NOT
+    # appear under dismissed_findings either — the human reviewer never sees it.
+    assert report.dismissed_findings == []

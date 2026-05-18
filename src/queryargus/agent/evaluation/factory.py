@@ -21,6 +21,7 @@ from queryargus.agent.evaluation.composite import (
     CompositeFindingEvaluator,
     CompositeRunEvaluator,
 )
+from queryargus.agent.evaluation.escalation import EscalationFindingEvaluator
 from queryargus.agent.evaluation.judge import JudgeRunEvaluator
 from queryargus.agent.evaluation.rules import (
     RulesActionEvaluator,
@@ -65,6 +66,16 @@ def build_finding_evaluator(
                 RulesFindingEvaluator(),
                 SelfFindingEvaluator(llm=agent_llm, model_name=agent_model_name),
             ]
+        )
+    if strategy == "escalation":
+        # Arm B — wrap rules-based gate with a confidence-driven router that
+        # parks mid-confidence findings as ``pending_review`` and drops
+        # low-confidence findings outright. Thresholds + cap come from config.
+        return EscalationFindingEvaluator(
+            inner=RulesFindingEvaluator(),
+            high_threshold=config.escalation_high_threshold,
+            low_threshold=config.escalation_low_threshold,
+            cap=config.escalation_cap,
         )
     raise ValueError(
         f"Finding gate strategy {strategy!r} is not supported in v1 (judge-finding not implemented)."

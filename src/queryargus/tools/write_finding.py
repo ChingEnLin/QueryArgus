@@ -13,7 +13,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from queryargus.models.finding import Finding, FindingSeverity
+from queryargus.models.finding import Finding, FindingSeverity, FindingStatus
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,9 @@ class FindingsCollector:
         affected_pct: float,
         sample_values: list[Any] | None = None,
         confirmed: bool = True,
+        confidence: float | None = None,
+        confidence_reason: str | None = None,
+        status: FindingStatus = "published",
     ) -> UUID:
         """Add or update a finding. Returns the finding's UUID (stable across updates)."""
         key = (field, category)
@@ -52,6 +55,9 @@ class FindingsCollector:
                     "affected_pct": affected_pct,
                     "sample_values": list(sample_values or []),
                     "confirmed": confirmed,
+                    "confidence": confidence,
+                    "confidence_reason": confidence_reason,
+                    "status": status,
                 }
             )
             self._by_key[key] = updated
@@ -69,6 +75,9 @@ class FindingsCollector:
             affected_pct=affected_pct,
             sample_values=list(sample_values or []),
             confirmed=confirmed,
+            confidence=confidence,
+            confidence_reason=confidence_reason,
+            status=status,
         )
         self._by_key[key] = finding
         logger.info("write_finding created field=%s category=%s id=%s", field, category, finding.id)

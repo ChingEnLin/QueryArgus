@@ -405,6 +405,69 @@ class ReportStore:
             )
         return True
 
+    def resolve_pending_finding(
+        self,
+        *,
+        report_id: UUID,
+        finding_id: UUID,
+        verdict: str,
+    ) -> bool:
+        """Arm B — resolve a pending_review finding via a human verdict.
+
+        ``verdict`` semantics:
+
+        - ``"tp"``       → status='published', user_label='tp'
+        - ``"fp"``       → status='dropped',   user_label='fp'
+        - ``"need_info"`` → status stays ``pending_review`` (deferred); no user_label written.
+
+        Mirrors both the relational row and the matching entry in
+        ``raw_report`` JSONB. Returns ``False`` when no such finding exists
+        or it is not in ``pending_review`` state.
+        """
+        if verdict not in ("tp", "fp", "need_info"):
+            raise ValueError(f"invalid verdict {verdict!r}; expected 'tp' | 'fp' | 'need_info'")
+        if verdict == "need_info":
+            # Caller may use this to record a non-decision; nothing to update.
+            return True
+
+        new_status = "published" if verdict == "tp" else "dropped"
+        new_label = verdict  # 'tp' or 'fp'
+
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE argus_findings
+                SET status = %s, user_label = %s
+                WHERE id = %s AND report_id = %s AND status = 'pending_review'
+                """,
+                (new_status, new_label, str(finding_id), str(report_id)),
+            )
+            if cur.rowcount == 0:
+                return False
+            # Mirror into raw_report so a subsequent get() reflects the
+            # resolution without a separate join.
+            cur.execute(
+                "SELECT raw_report FROM argus_reports WHERE id = %s",
+                (str(report_id),),
+            )
+            row: Any = cur.fetchone()
+            if row is None:
+                return True
+            raw: Any = row[0]
+            if isinstance(raw, str):
+                raw = json.loads(raw)
+            target_id = str(finding_id)
+            for entry in raw.get("findings", []):
+                if entry.get("id") == target_id:
+                    entry["status"] = new_status
+                    entry["user_label"] = new_label
+                    break
+            cur.execute(
+                "UPDATE argus_reports SET raw_report = %s WHERE id = %s",
+                (Json(raw), str(report_id)),
+            )
+        return True
+
     def get_previous(
         self,
         *,
@@ -471,14 +534,16 @@ def _insert_finding(
         INSERT INTO argus_findings (
             id, report_id, field, category, severity, description, hypothesis,
             evidence_query, affected_count, affected_pct, sample_values, confirmed,
-            user_label
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            user_label, confidence, confidence_reason, status
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+        )
         """,
         (
             str(f.id), report_id, f.field, f.category, f.severity.value, f.description, f.hypothesis,
             f.evidence_query, f.affected_count, f.affected_pct,
             Json(_jsonable_list(f.sample_values)), f.confirmed,
-            f.user_label,
+            f.user_label, f.confidence, f.confidence_reason, f.status,
         ),
     )
 

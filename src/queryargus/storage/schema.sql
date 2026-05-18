@@ -39,6 +39,11 @@ CREATE TABLE IF NOT EXISTS argus_findings (
     evaluation_score   DOUBLE PRECISION,
     evaluated_by       TEXT,
     user_label         TEXT,  -- 'tp' | 'fp' | NULL
+    -- Arm B (self-escalation) — per-finding self-assessment + lifecycle.
+    -- ``status`` defaults to 'published' so prior rows remain user-visible.
+    confidence         DOUBLE PRECISION,
+    confidence_reason  TEXT,
+    status             TEXT NOT NULL DEFAULT 'published',
     created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -79,3 +84,12 @@ CREATE INDEX IF NOT EXISTS idx_argus_dismissed_report
     ON argus_dismissed_findings(report_id);
 CREATE INDEX IF NOT EXISTS idx_argus_eval_records_report
     ON argus_evaluation_records(report_id, gate);
+
+-- Arm B (self-escalation) — additive ALTERs so existing argus_findings
+-- tables created before this branch pick up the new columns on init_schema.
+-- ``ADD COLUMN IF NOT EXISTS`` is idempotent in PostgreSQL 9.6+.
+ALTER TABLE argus_findings ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION;
+ALTER TABLE argus_findings ADD COLUMN IF NOT EXISTS confidence_reason TEXT;
+ALTER TABLE argus_findings ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'published';
+CREATE INDEX IF NOT EXISTS idx_argus_findings_status
+    ON argus_findings(status, report_id);
