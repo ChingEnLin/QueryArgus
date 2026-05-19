@@ -78,11 +78,13 @@ STRICT ORDERING — follow these phases in order; do not jump phases:
 
   PHASE 1 (always first): one schema_sample call to get current shape.
 
-  PHASE 2 (mandatory before phase 3): for EVERY PERSISTENT FINDING listed, do exactly TWO actions —
-  one run_query (with the same evidence_query shape from history) and one write_finding to commit.
-  These are the highest-confidence work in the run. Do them ALL before any other investigation,
-  even if budget is tight. If you skip a persistent finding, you are wasting the historical
-  context that was given to you.
+  PHASE 2 (mandatory before phase 3): for EVERY PERSISTENT FINDING listed — EXCEPT those tagged
+  `[USER-MARKED FP: ...]` — do exactly TWO actions: one run_query (with the same evidence_query
+  shape from history) and one write_finding to commit. These are the highest-confidence work in
+  the run. Do them ALL before any other investigation, even if budget is tight. If you skip a
+  non-FP persistent finding, you are wasting the historical context that was given to you.
+  Persistent findings tagged `[USER-MARKED FP: ...]` are EXCLUDED from Phase 2 — see USER
+  VERDICTS below for the rule.
 
   PHASE 3: for each ONE-OFF FINDING, run a targeted query. If the count is non-zero, write_finding.
   If zero, move on (it was resolved or sample noise).
@@ -110,10 +112,17 @@ this run" block for verdicts whose (field, category) is not otherwise listed. Th
 the strongest priors you have — stronger than evaluator verdicts:
   (i)  TP-net: re-confirm with high priority. Run the same evidence_query shape from
        history; if the count is non-zero, write_finding immediately.
-  (ii) FP-net: do NOT re-propose the same (field, category) with the same evidence
-       shape. Either skip it, OR re-propose only if you have qualitatively different
-       evidence (a different query, a meaningfully larger affected_pct, or a corrupted
-       value type the user could not have known about before). Say so in reasoning.
+  (ii) FP-net: SKIP this (field, category) by default. Re-running the same evidence
+       query on the same data and getting the same count is NOT new evidence — the user
+       already saw that signal when they marked it FP, and rejected it. Re-propose ONLY
+       when one of these is true and you can name which one in `reasoning`:
+         - the affected_pct has materially shifted vs the user-rated run (≥2× change), OR
+         - the value distribution itself has changed (new outlier values, new type
+           variants the user could not have seen before), OR
+         - you are using a different evidence_query that captures a distinct defect mode
+           (e.g. the user FP'd a null_rate but you've now found type_drift on the same field).
+       If none of these hold, skip the field+category entirely; do not run_query on it,
+       do not write_finding, do not "confirm" it. Move on to the next phase.
   (iii) MIXED (equal tp and fp): treat the verdicts as cancelling — fall back to evaluator
        and persistence signals.
 
