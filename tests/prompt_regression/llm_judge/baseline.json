@@ -1,0 +1,12 @@
+{
+  "_meta": {
+    "judge_model": "gemini-2.5-pro",
+    "judge_temperature": 0.0,
+    "refreshed_at": null,
+    "notes": "Thresholds are the floor each metric must clear on every fixture. Refresh via `make refresh-prompt-baseline` after an intentional prompt or fixture change; review the diff before committing."
+  },
+  "thresholds": {
+    "severity_calibration": 0.6,
+    "hypothesis_groundedness": 0.6
+  }
+}

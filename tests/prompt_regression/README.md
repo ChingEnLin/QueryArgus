@@ -10,11 +10,19 @@ or state-rendering edits can be reviewed via a pass/fail diff.
 
 ## Run
 
+Two layers, each gated by its own marker. Default `pytest` skips both.
+
 ```
-pytest -m prompt_regression
+make test-prompt-regression       # deterministic — no LLM, free
+make test-prompt-regression-llm   # LLM-judged — costs tokens
 ```
 
-Default `pytest` runs skip this suite (see `addopts` in `pyproject.toml`).
+The LLM-judge layer requires:
+
+- `pip install -e '.[eval]'` (installs deepeval).
+- `GEMINI_API_KEY` set in env.
+
+If either is missing the suite skips cleanly rather than failing.
 
 ## Fixture layout
 
@@ -44,8 +52,35 @@ Default `pytest` runs skip this suite (see `addopts` in `pyproject.toml`).
    `UPDATE_PROMPT_SNAPSHOTS=1 pytest -m prompt_regression` once to write the
    golden file, then commit it.
 
-## Out of scope here
+## LLM-judged layer
 
-Severity-vs-evidence calibration, hypothesis groundedness, summary faithfulness
-— those live in the LLM-judged layer (deepeval, not yet wired). This suite is
-strictly the deterministic gate.
+Lives under `llm_judge/`. Built on `deepeval` with a **pinned judge model**
+(`gemini-2.5-pro`, temp `0.0`) deliberately distinct from the agent's model so
+the regression baseline is stable across reruns.
+
+Two GEval metrics in v1:
+
+- `severity_calibration` — severity matches affected_pct and the nature of the
+  evidence.
+- `hypothesis_groundedness` — the hypothesis follows from the evidence_query
+  and sample_values, not free speculation.
+
+Thresholds live in `llm_judge/baseline.json`. They're the floor every `pass`
+finding fixture must clear. Adversarial fixtures are excluded from the judge
+run — those are the deterministic layer's job.
+
+### Refreshing the baseline
+
+```
+make refresh-prompt-baseline
+```
+
+Runs every metric on every `pass` finding fixture, takes the **minimum**
+observed score per metric (not the mean — the threshold has to be a floor),
+subtracts a small margin, and rewrites `baseline.json`. Always review the diff
+before committing; a large downward move is a real regression, not an excuse
+to lower the floor.
+
+### Out of scope (still)
+
+Summary-vs-findings faithfulness — needs `Report` fixtures. Not yet wired.
