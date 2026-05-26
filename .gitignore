@@ -44,6 +44,7 @@ Thumbs.db
 *.log
 scratch/
 .claude/
+.deepeval_telemetry.txt
 
 # Local planning / design / AI-assistant context (not for the public repo)
 CLAUDE.md
