@@ -33,7 +33,8 @@ def build_judge() -> Any:
         from deepeval.models.base_model import DeepEvalBaseLLM  # noqa: PLC0415
     except ImportError as exc:  # pragma: no cover - exercised by skip path
         raise RuntimeError(
-            "deepeval is not installed. Install with: pip install -e '.[eval]'"
+            f"failed to import deepeval ({exc}). "
+            "Install with: pip install -e '.[eval]'"
         ) from exc
 
     api_key = os.environ.get("GEMINI_API_KEY")
@@ -48,26 +49,34 @@ def build_judge() -> Any:
 
         def __init__(self) -> None:
             self._client = genai.Client(api_key=api_key)
-            self._config = genai_types.GenerateContentConfig(
+            self._text_config = genai_types.GenerateContentConfig(
                 temperature=JUDGE_TEMPERATURE,
+            )
+            self._json_config = genai_types.GenerateContentConfig(
+                temperature=JUDGE_TEMPERATURE,
+                response_mime_type="application/json",
             )
 
         def load_model(self) -> Any:
             return self._client
 
         def generate(self, prompt: str, schema: Any = None) -> Any:
+            config = self._json_config if schema is not None else self._text_config
             response = self._client.models.generate_content(
                 model=JUDGE_MODEL,
                 contents=prompt,
-                config=self._config,
+                config=config,
             )
-            text = getattr(response, "text", None) or ""
-            if schema is not None:
-                # GEval (and a few other metrics) expect the judge to honour
-                # a pydantic ``schema``. We coerce by re-prompting with the
-                # schema hint and parsing the JSON output.
-                return schema.model_validate_json(text)
-            return text
+            text = (getattr(response, "text", None) or "").strip()
+            if schema is None:
+                return text
+            # Strip ```json fences if the model adds them despite
+            # response_mime_type — Gemini occasionally does this on Pro.
+            if text.startswith("```"):
+                text = text.strip("`")
+                if text.lower().startswith("json"):
+                    text = text[4:].lstrip()
+            return schema.model_validate_json(text)
 
         async def a_generate(self, prompt: str, schema: Any = None) -> Any:
             return self.generate(prompt, schema)

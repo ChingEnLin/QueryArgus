@@ -40,6 +40,12 @@ eval = [
     # Heavy dep — kept out of the default install. Required by the
     # ``prompt_regression_llm`` pytest marker.
     "deepeval>=1.0,<3",
+    # deepeval 2.x imports `langchain` at module load (via its OpenAI model
+    # adapter) but only declares `langchain-classic` as a hard dep, so the
+    # bare meta-package must be pinned explicitly. Drop this once deepeval
+    # cleans up the import.
+    # Must be <1.0 because deepeval 2.x imports `langchain.schema`, removed in 1.0.
+    "langchain>=0.3,<1",
 ]
 dev = [
     "pytest>=8,<9",
