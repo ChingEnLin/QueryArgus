@@ -35,6 +35,18 @@ api = [
     "fastapi>=0.110,<1",
     "uvicorn>=0.27,<1",
 ]
+eval = [
+    # LLM-judged prompt regression layer (tests/prompt_regression/llm_judge).
+    # Heavy dep — kept out of the default install. Required by the
+    # ``prompt_regression_llm`` pytest marker.
+    "deepeval>=1.0,<3",
+    # deepeval 2.x imports `langchain` at module load (via its OpenAI model
+    # adapter) but only declares `langchain-classic` as a hard dep, so the
+    # bare meta-package must be pinned explicitly. Drop this once deepeval
+    # cleans up the import.
+    # Must be <1.0 because deepeval 2.x imports `langchain.schema`, removed in 1.0.
+    "langchain>=0.3,<1",
+]
 dev = [
     "pytest>=8,<9",
     "pytest-cov>=5,<6",
@@ -80,4 +92,8 @@ select = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers -m 'not prompt_regression and not prompt_regression_llm'"
+markers = [
+    "prompt_regression: opt-in deterministic prompt/rule regression suite (run with -m prompt_regression)",
+    "prompt_regression_llm: opt-in LLM-judged prompt regression suite — costs tokens (run with -m prompt_regression_llm)",
+]

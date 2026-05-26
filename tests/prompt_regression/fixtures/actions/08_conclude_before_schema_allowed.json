@@ -1,0 +1,14 @@
+{
+  "description": "Edge case: conclude is exempt from sample_before_query. Bare-state conclude does not fail the action gate (the run-level early_termination rule catches it elsewhere).",
+  "state": {
+    "iteration": 1,
+    "iteration_budget": 10
+  },
+  "action": {
+    "reasoning": "Nothing to do.",
+    "action": "conclude",
+    "action_input": {},
+    "confidence": 0.2
+  },
+  "expected_verdict": "pass"
+}

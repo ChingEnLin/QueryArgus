@@ -1,0 +1,14 @@
+{
+  "description": "Empty state + schema_sample: the canonical opening move. No rules fire.",
+  "state": {
+    "iteration": 0,
+    "iteration_budget": 10
+  },
+  "action": {
+    "reasoning": "First iteration — survey collection shape before doing anything else.",
+    "action": "schema_sample",
+    "action_input": {"sample_size": 200},
+    "confidence": 0.95
+  },
+  "expected_verdict": "pass"
+}

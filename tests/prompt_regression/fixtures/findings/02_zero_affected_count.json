@@ -1,0 +1,16 @@
+{
+  "description": "Adversarial: finding committed with affected_count=0. Must FAIL evidence_required.",
+  "state": {"iteration": 4, "iteration_budget": 10},
+  "finding": {
+    "field": "age",
+    "category": "null_rate",
+    "severity": "low",
+    "description": "Field age might sometimes be null.",
+    "hypothesis": "Maybe optional.",
+    "evidence_query": "{\"age\": null}",
+    "affected_count": 0,
+    "affected_pct": 0.0
+  },
+  "expected_verdict": "fail",
+  "expected_rule": "evidence_required"
+}

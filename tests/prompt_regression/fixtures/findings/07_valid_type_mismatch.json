@@ -1,0 +1,16 @@
+{
+  "description": "Canonical: type_mismatch finding where age is sometimes a string. Medium severity is calibrated for a small slice.",
+  "state": {"iteration": 7, "iteration_budget": 10},
+  "finding": {
+    "field": "age",
+    "category": "type_mismatch",
+    "severity": "medium",
+    "description": "Field 'age' is stored as a string (e.g. 'thirty') on ~1.4% of documents instead of int — breaks numeric comparisons downstream.",
+    "hypothesis": "An older ingestion path accepted free-text age and never coerced it; newer writes are int.",
+    "evidence_query": "{\"age\": {\"$type\": \"string\"}}",
+    "affected_count": 28,
+    "affected_pct": 0.014,
+    "sample_values": ["thirty", "twenty-five"]
+  },
+  "expected_verdict": "pass"
+}

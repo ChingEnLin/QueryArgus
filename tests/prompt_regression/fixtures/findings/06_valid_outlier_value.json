@@ -1,0 +1,16 @@
+{
+  "description": "Canonical: well-formed outlier_value finding. Age=9999 is a clear sentinel/junk value.",
+  "state": {"iteration": 6, "iteration_budget": 10},
+  "finding": {
+    "field": "age",
+    "category": "outlier_value",
+    "severity": "high",
+    "description": "Field 'age' contains the sentinel value 9999 on a small but non-trivial slice — implausible as a real human age.",
+    "hypothesis": "Upstream form treats 9999 as 'unknown' instead of leaving the field null, leaking the sentinel into stored data.",
+    "evidence_query": "{\"age\": {\"$gt\": 150}}",
+    "affected_count": 42,
+    "affected_pct": 0.021,
+    "sample_values": [9999]
+  },
+  "expected_verdict": "pass"
+}

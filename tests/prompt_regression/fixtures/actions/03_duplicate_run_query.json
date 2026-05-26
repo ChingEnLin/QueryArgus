@@ -1,0 +1,23 @@
+{
+  "description": "Adversarial: agent repeats a filter already in queries_run. Must FAIL no_repeat_query.",
+  "state": {
+    "iteration": 4,
+    "iteration_budget": 10,
+    "queries_run": [{"age": {"$gt": 150}}],
+    "schema": {
+      "collection": "users",
+      "documents_sampled": 200,
+      "fields": [
+        {"path": "age", "types": {"int": 195, "null": 5}, "present_count": 200, "null_count": 5, "missing_count": 0, "cardinality": 60, "cardinality_capped": false, "sample_values": [25, 30, 9999]}
+      ]
+    }
+  },
+  "action": {
+    "reasoning": "Re-confirm the outlier count.",
+    "action": "run_query",
+    "action_input": {"filter": {"age": {"$gt": 150}}, "limit": 50},
+    "confidence": 0.5
+  },
+  "expected_verdict": "fail",
+  "expected_rule": "no_repeat_query"
+}

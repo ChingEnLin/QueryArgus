@@ -1,0 +1,22 @@
+{
+  "description": "Canonical: new filter after schema_sample. No rules fire.",
+  "state": {
+    "iteration": 2,
+    "iteration_budget": 10,
+    "queries_run": [{"age": {"$gt": 150}}],
+    "schema": {
+      "collection": "users",
+      "documents_sampled": 200,
+      "fields": [
+        {"path": "age", "types": {"int": 195, "null": 5}, "present_count": 200, "null_count": 5, "missing_count": 0, "cardinality": 60, "cardinality_capped": false, "sample_values": []}
+      ]
+    }
+  },
+  "action": {
+    "reasoning": "Look at the null subset directly.",
+    "action": "run_query",
+    "action_input": {"filter": {"age": null}, "limit": 50},
+    "confidence": 0.8
+  },
+  "expected_verdict": "pass"
+}

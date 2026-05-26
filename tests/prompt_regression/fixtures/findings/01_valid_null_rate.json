@@ -1,0 +1,16 @@
+{
+  "description": "Canonical: well-formed null_rate finding with calibrated severity. No rules fire.",
+  "state": {"iteration": 4, "iteration_budget": 10},
+  "finding": {
+    "field": "age",
+    "category": "null_rate",
+    "severity": "medium",
+    "description": "Field 'age' is null on 7.5% of documents — likely an optional onboarding field.",
+    "hypothesis": "Onboarding flow doesn't require age — old accounts predate the requirement.",
+    "evidence_query": "{\"age\": null}",
+    "affected_count": 150,
+    "affected_pct": 0.075,
+    "sample_values": [null]
+  },
+  "expected_verdict": "pass"
+}

@@ -1,0 +1,15 @@
+{
+  "description": "Adversarial: agent skips schema_sample and jumps to run_query. Must FAIL sample_before_query.",
+  "state": {
+    "iteration": 0,
+    "iteration_budget": 10
+  },
+  "action": {
+    "reasoning": "I'll just look at ages directly.",
+    "action": "run_query",
+    "action_input": {"filter": {"age": {"$gt": 150}}, "limit": 50},
+    "confidence": 0.7
+  },
+  "expected_verdict": "fail",
+  "expected_rule": "sample_before_query"
+}

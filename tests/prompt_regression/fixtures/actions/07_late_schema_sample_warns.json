@@ -1,0 +1,20 @@
+{
+  "description": "Late-run schema_sample wastes budget — must WARN budget_warning.",
+  "state": {
+    "iteration": 8,
+    "iteration_budget": 10,
+    "schema": {
+      "collection": "users",
+      "documents_sampled": 200,
+      "fields": []
+    }
+  },
+  "action": {
+    "reasoning": "Re-survey the schema now that I have more context.",
+    "action": "schema_sample",
+    "action_input": {"sample_size": 500},
+    "confidence": 0.3
+  },
+  "expected_verdict": "warn",
+  "expected_rule": "budget_warning"
+}
