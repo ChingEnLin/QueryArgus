@@ -1,0 +1,16 @@
+{
+  "description": "Borderline: severity=HIGH with affected_pct=0.05%. Calibration rule says HIGH on <0.1% is suspicious. Must WARN severity_calibration_high.",
+  "state": {"iteration": 5, "iteration_budget": 10},
+  "finding": {
+    "field": "score",
+    "category": "outlier_value",
+    "severity": "high",
+    "description": "Score exceeds the documented 0-1 range for a small number of records.",
+    "hypothesis": "Pipeline mis-normalised a small batch.",
+    "evidence_query": "{\"score\": {\"$gt\": 1.0}}",
+    "affected_count": 1,
+    "affected_pct": 0.0005
+  },
+  "expected_verdict": "warn",
+  "expected_rule": "severity_calibration_high"
+}

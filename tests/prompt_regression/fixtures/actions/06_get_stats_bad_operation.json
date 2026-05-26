@@ -1,0 +1,20 @@
+{
+  "description": "Adversarial: get_stats with an unsupported operation. Must FAIL action_input_shape.",
+  "state": {
+    "iteration": 3,
+    "iteration_budget": 10,
+    "schema": {
+      "collection": "users",
+      "documents_sampled": 200,
+      "fields": []
+    }
+  },
+  "action": {
+    "reasoning": "Compute median age.",
+    "action": "get_stats",
+    "action_input": {"field": "age", "operation": "median"},
+    "confidence": 0.4
+  },
+  "expected_verdict": "fail",
+  "expected_rule": "action_input_shape"
+}

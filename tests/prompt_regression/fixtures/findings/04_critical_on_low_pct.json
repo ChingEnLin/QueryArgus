@@ -1,0 +1,16 @@
+{
+  "description": "Adversarial: severity=CRITICAL with affected_pct=0.4%. Calibration rule says CRITICAL needs >=1%. Must FAIL severity_calibration_critical.",
+  "state": {"iteration": 5, "iteration_budget": 10},
+  "finding": {
+    "field": "user_id",
+    "category": "broken_ref",
+    "severity": "critical",
+    "description": "Foreign key user_id points to non-existent users.",
+    "hypothesis": "Orphaned references after a user-deletion bug.",
+    "evidence_query": "{\"user_id\": {\"$nin\": [...known ids...]}}",
+    "affected_count": 8,
+    "affected_pct": 0.004
+  },
+  "expected_verdict": "fail",
+  "expected_rule": "severity_calibration_critical"
+}

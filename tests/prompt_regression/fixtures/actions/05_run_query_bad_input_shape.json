@@ -1,0 +1,20 @@
+{
+  "description": "Adversarial: run_query with filter as a string. Must FAIL action_input_shape.",
+  "state": {
+    "iteration": 2,
+    "iteration_budget": 10,
+    "schema": {
+      "collection": "users",
+      "documents_sampled": 200,
+      "fields": []
+    }
+  },
+  "action": {
+    "reasoning": "Look at ages.",
+    "action": "run_query",
+    "action_input": {"filter": "age > 150", "limit": 50},
+    "confidence": 0.6
+  },
+  "expected_verdict": "fail",
+  "expected_rule": "action_input_shape"
+}

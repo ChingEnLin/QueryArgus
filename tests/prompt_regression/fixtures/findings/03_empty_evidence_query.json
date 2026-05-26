@@ -1,0 +1,16 @@
+{
+  "description": "Adversarial: finding with empty evidence_query — not reproducible. Must FAIL evidence_query_present.",
+  "state": {"iteration": 4, "iteration_budget": 10},
+  "finding": {
+    "field": "email",
+    "category": "format_violation",
+    "severity": "medium",
+    "description": "Some emails look malformed.",
+    "hypothesis": "Probably user-entry typos.",
+    "evidence_query": "   ",
+    "affected_count": 20,
+    "affected_pct": 0.01
+  },
+  "expected_verdict": "fail",
+  "expected_rule": "evidence_query_present"
+}
