@@ -40,6 +40,7 @@ class TokenUsage:
 class LLMResponse:
     action: AgentAction
     usage: TokenUsage = field(default_factory=TokenUsage)
+    model: str = ""
 
 
 @dataclass
@@ -48,6 +49,7 @@ class JSONResponse:
 
     raw: str
     usage: TokenUsage = field(default_factory=TokenUsage)
+    model: str = ""
 
 
 class LLMClient(Protocol):
@@ -78,6 +80,7 @@ class ScriptedLLMClient:
         fallback: AgentAction | None = None,
         json_fallback: str | None = None,
         usage_per_call: TokenUsage | None = None,
+        model: str = "",
     ) -> None:
         self._queue: deque[AgentAction] = deque(actions or [])
         self._json_queue: deque[str] = deque(json_responses or [])
@@ -91,15 +94,16 @@ class ScriptedLLMClient:
             '"reason": "scripted-default", "evaluated_by": "scripted"}'
         )
         self._usage = usage_per_call or TokenUsage()
+        self._model = model
         self.prompts: list[tuple[str, str]] = []
         self.json_prompts: list[tuple[str, str]] = []
 
     def propose_action(self, *, system: str, user: str) -> LLMResponse:
         self.prompts.append((system, user))
         action = self._queue.popleft() if self._queue else self._fallback
-        return LLMResponse(action=action, usage=self._usage)
+        return LLMResponse(action=action, usage=self._usage, model=self._model)
 
     def complete_json(self, *, system: str, user: str) -> JSONResponse:
         self.json_prompts.append((system, user))
         raw = self._json_queue.popleft() if self._json_queue else self._json_fallback
-        return JSONResponse(raw=raw, usage=self._usage)
+        return JSONResponse(raw=raw, usage=self._usage, model=self._model)
