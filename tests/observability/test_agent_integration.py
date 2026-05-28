@@ -11,7 +11,6 @@ from queryargus.models.action import AgentAction
 from queryargus.models.config import ArgusConfig
 from queryargus.models.connection import CosmosConnection
 from queryargus.observability.cost import CostTracker
-
 from tests.observability.test_observer import RecordingObserver
 
 

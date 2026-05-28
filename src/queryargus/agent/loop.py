@@ -483,9 +483,7 @@ def _compose_observer(observers: list[RunObserver] | None) -> RunObserver:
 
 def _summarize_action_args(action: AgentAction) -> str:
     """PII-safe shape-only summary of action inputs for log payloads."""
-    args = action.action_input or {}
-    if not isinstance(args, dict):
-        return type(args).__name__
+    args: dict[str, Any] = action.action_input or {}
     parts: list[str] = []
     for k, v in args.items():
         if isinstance(v, dict):
