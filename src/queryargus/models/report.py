@@ -16,6 +16,19 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+class ModelCost(BaseModel):
+    model: str
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    usd: float = Field(ge=0.0)
+
+
+class RunCost(BaseModel):
+    usd_total: float = Field(default=0.0, ge=0.0)
+    by_model: list[ModelCost] = Field(default_factory=list)
+    pricing_version: str = "2026-05"
+
+
 class AuditReport(BaseModel):
     """The structured output of one audit run. See spec §6.2."""
 
@@ -38,6 +51,7 @@ class AuditReport(BaseModel):
     # ScriptedLLMClient or another provider that does not report usage).
     total_input_tokens: int = Field(default=0, ge=0)
     total_output_tokens: int = Field(default=0, ge=0)
+    cost: RunCost | None = None
 
     # Evaluation outputs (populated by the evaluation layer — see spec §5)
     evaluation_records: list[EvaluationRecord] = Field(default_factory=list)

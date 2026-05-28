@@ -82,7 +82,7 @@ class GeminiClient:
             raw = getattr(response, "text", None) or ""
             try:
                 action = AgentAction.model_validate_json(raw)
-                return LLMResponse(action=action, usage=cumulative)
+                return LLMResponse(action=action, usage=cumulative, model=self._model)
             except (pydantic.ValidationError, json.JSONDecodeError) as exc:
                 last_error = exc
                 logger.warning(
@@ -115,4 +115,4 @@ class GeminiClient:
             config=config,
         )
         raw = getattr(response, "text", None) or ""
-        return JSONResponse(raw=raw, usage=_extract_usage(response))
+        return JSONResponse(raw=raw, usage=_extract_usage(response), model=self._model)
