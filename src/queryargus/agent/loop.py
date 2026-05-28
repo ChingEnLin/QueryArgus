@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from queryargus.agent.evaluation.base import (
     ActionEvaluator,
@@ -53,6 +53,7 @@ from queryargus.models.evaluation import (
 from queryargus.models.finding import Finding, FindingSeverity
 from queryargus.models.history import HistoricalContext
 from queryargus.models.report import AuditReport
+from queryargus.observability.observer import MultiObserver, NullObserver, RunObserver
 from queryargus.tools.get_stats import get_stats
 from queryargus.tools.run_query import run_query
 from queryargus.tools.schema_sample import schema_sample
@@ -69,9 +70,16 @@ class ArgusAgent:
     action_evaluator: ActionEvaluator | None = None
     finding_evaluator: FindingEvaluator | None = None
     run_evaluator: RunEvaluator | None = None
+    observer: RunObserver = field(default_factory=NullObserver)
 
     @classmethod
-    def with_defaults(cls, config: ArgusConfig, llm: LLMClient) -> ArgusAgent:
+    def with_defaults(
+        cls,
+        config: ArgusConfig,
+        llm: LLMClient,
+        *,
+        observers: list[RunObserver] | None = None,
+    ) -> ArgusAgent:
         """Build an agent with the rules-only evaluation stack (PROFILE_FAST)."""
         return cls(
             config=config,
@@ -79,6 +87,7 @@ class ArgusAgent:
             action_evaluator=RulesActionEvaluator(),
             finding_evaluator=RulesFindingEvaluator(),
             run_evaluator=RulesRunEvaluator(),
+            observer=_compose_observer(observers),
         )
 
     @classmethod
@@ -90,6 +99,7 @@ class ArgusAgent:
         agent_model_name: str | None = None,
         judge_llm: LLMClient | None = None,
         judge_model_name: str | None = None,
+        observers: list[RunObserver] | None = None,
     ) -> ArgusAgent:
         """Build an agent with the evaluator stack derived from ``config.evaluation``."""
         agent_name = agent_model_name or config.llm_model
@@ -109,6 +119,7 @@ class ArgusAgent:
                 judge_llm=judge_llm,
                 judge_model_name=judge_model_name,
             ),
+            observer=_compose_observer(observers),
         )
 
     def run(
@@ -119,6 +130,8 @@ class ArgusAgent:
         history: HistoricalContext | None = None,
     ) -> AuditReport:
         started = time.time()
+        run_id = uuid4()
+        self.observer.on_run_start(run_id=run_id, collection=collection)
         state = AgentState(
             collection=collection,
             database=connection.database_name,
@@ -141,7 +154,19 @@ class ArgusAgent:
 
         while state.iteration < state.iteration_budget:
             state.iteration += 1
+            self.observer.on_iteration_start(iter=state.iteration)
+            _llm_t0 = time.monotonic_ns()
             action = planner.propose(state)
+            _llm_latency_ms = int((time.monotonic_ns() - _llm_t0) // 1_000_000)
+            last_resp = planner.last_response
+            if last_resp is not None:
+                self.observer.on_llm_call(
+                    purpose="propose_action",
+                    model=last_resp.model,
+                    usage=last_resp.usage,
+                    latency_ms=_llm_latency_ms,
+                )
+            self.observer.on_action(action=action)
             state.history.append(action)
             state.last_critique = None  # consumed by the planner this iteration
 
@@ -154,9 +179,17 @@ class ArgusAgent:
                 state.last_critique = action_verdict.critique or action_verdict.reason
                 continue
 
+            _tool_t0 = time.monotonic_ns()
             try:
                 _dispatch_action(action, state, connection, collection, self)
             except _ConcludeRequested:
+                self.observer.on_tool_call(
+                    name=action.action,
+                    args_summary=_summarize_action_args(action),
+                    ok=True,
+                    latency_ms=int((time.monotonic_ns() - _tool_t0) // 1_000_000),
+                    error=None,
+                )
                 concluded = True
                 run_evaluation = self._evaluate_run(state, started)
                 if (
@@ -174,16 +207,32 @@ class ArgusAgent:
                 break
             except Exception as exc:  # noqa: BLE001 — surface any tool-side error in the trace
                 logger.exception("tool execution failed iter=%d action=%s", state.iteration, action.action)
+                self.observer.on_tool_call(
+                    name=action.action,
+                    args_summary=_summarize_action_args(action),
+                    ok=False,
+                    latency_ms=int((time.monotonic_ns() - _tool_t0) // 1_000_000),
+                    error=f"{type(exc).__name__}: {exc}",
+                )
                 state.last_observation = f"ERROR executing {action.action}: {exc}"
                 state.last_critique = (
                     f"the previous action raised an exception ({type(exc).__name__}); "
                     "try a different approach or conclude"
+                )
+            else:
+                self.observer.on_tool_call(
+                    name=action.action,
+                    args_summary=_summarize_action_args(action),
+                    ok=True,
+                    latency_ms=int((time.monotonic_ns() - _tool_t0) // 1_000_000),
+                    error=None,
                 )
 
         if not concluded:
             run_evaluation = self._evaluate_run(state, started)
 
         report = _build_report(state, started, run_evaluation)
+        self.observer.on_run_complete(report=report)
         logger.info(
             "run done collection=%s findings=%d dismissed=%d iterations=%d duration=%.2fs",
             collection,
@@ -209,6 +258,12 @@ class ArgusAgent:
                 iteration=state.iteration,
             )
         )
+        self.observer.on_eval(
+            target="action",
+            verdict=str(result.verdict),
+            score=result.score,
+            evaluator=result.evaluated_by,
+        )
         return result
 
     def _evaluate_finding(self, finding: Finding, state: AgentState) -> EvaluationResult | None:
@@ -226,6 +281,12 @@ class ArgusAgent:
                 target_id=finding.id,
                 iteration=state.iteration,
             )
+        )
+        self.observer.on_eval(
+            target="finding",
+            verdict=str(result.verdict),
+            score=result.score,
+            evaluator=result.evaluated_by,
         )
         return result
 
@@ -245,6 +306,12 @@ class ArgusAgent:
                 critique=result.critique,
                 iteration=state.iteration,
             )
+        )
+        self.observer.on_eval(
+            target="run",
+            verdict=str(result.verdict),
+            score=result.score,
+            evaluator=result.evaluated_by,
         )
         return result
 
@@ -379,6 +446,7 @@ def _commit_finding(action: AgentAction, state: AgentState, agent: ArgusAgent) -
         state.last_observation = (
             f"write_finding committed id={fid} field={candidate.field} category={candidate.category}"
         )
+    agent.observer.on_finding(finding=candidate)
 
 
 def _demote(s: FindingSeverity) -> FindingSeverity:
@@ -405,6 +473,30 @@ def _filter_fields(filt: dict[str, Any], prefix: str = "") -> set[str]:
             if inner_field_keys:
                 out.update(_filter_fields(v, path))
     return out
+
+
+def _compose_observer(observers: list[RunObserver] | None) -> RunObserver:
+    if not observers:
+        return NullObserver()
+    return MultiObserver(list(observers))
+
+
+def _summarize_action_args(action: AgentAction) -> str:
+    """PII-safe shape-only summary of action inputs for log payloads."""
+    args = action.action_input or {}
+    if not isinstance(args, dict):
+        return type(args).__name__
+    parts: list[str] = []
+    for k, v in args.items():
+        if isinstance(v, dict):
+            parts.append(f"{k}=<dict {len(v)} keys>")
+        elif isinstance(v, list):
+            parts.append(f"{k}=<list {len(v)}>")
+        elif isinstance(v, str):
+            parts.append(f"{k}=<str {len(v)}>")
+        else:
+            parts.append(f"{k}={type(v).__name__}")
+    return ", ".join(parts)
 
 
 def _safe_collection_size(connection: CosmosConnection, collection: str) -> int:
