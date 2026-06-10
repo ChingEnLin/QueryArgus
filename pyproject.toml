@@ -35,6 +35,10 @@ api = [
     "fastapi>=0.110,<1",
     "uvicorn>=0.27,<1",
 ]
+cache = [
+    # Prompt-cache instrumentation for --cache-report (import name: cache_lens).
+    "cachelens>=1.0,<2",
+]
 eval = [
     # LLM-judged prompt regression layer (tests/prompt_regression/llm_judge).
     # Heavy dep — kept out of the default install. Required by the
