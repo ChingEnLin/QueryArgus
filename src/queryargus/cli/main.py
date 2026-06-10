@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import sys
+from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any
 
 import typer
@@ -62,19 +63,19 @@ def _setup_logging(verbose: bool) -> None:
             logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
-def _build_llm_client(config: ArgusConfig) -> LLMClient:
+def _build_llm_client(config: ArgusConfig, client: Any | None = None) -> LLMClient:
     """Default LLM factory. Tests monkeypatch this to inject ScriptedLLMClient."""
     # Local import — google-genai is heavy; defer until a real run actually needs it.
     from queryargus.llm.gemini import GeminiClient  # noqa: PLC0415
 
-    return GeminiClient(model=config.llm_model)
+    return GeminiClient(model=config.llm_model, client=client)
 
 
-def _build_judge_llm_client(model: str) -> LLMClient:
+def _build_judge_llm_client(model: str, client: Any | None = None) -> LLMClient:
     """Build the judge LLM. Same provider as the agent in v1; different model."""
     from queryargus.llm.gemini import GeminiClient  # noqa: PLC0415
 
-    return GeminiClient(model=model)
+    return GeminiClient(model=model, client=client)
 
 
 _PROFILES: dict[str, EvaluatorConfig] = {
@@ -202,6 +203,14 @@ def run(
         "gemini-2.5-pro", "--judge-model",
         help="Model used by judge run-evaluator (only consulted when run gate is 'judge' or 'composite').",
     ),
+    cache_report: bool = typer.Option(
+        False, "--cache-report",
+        help="Instrument Gemini calls with cache-lens and print a prompt-cache report after the run.",
+    ),
+    cache_report_json: str | None = typer.Option(
+        None, "--cache-report-json",
+        help="Also export the cache-lens report as JSON to this path (implies --cache-report).",
+    ),
     postgres_url: str | None = typer.Option(
         None, "--postgres-url",
         envvar="POSTGRES_URL",
@@ -231,21 +240,42 @@ def run(
     persist_url = _validate_postgres_url(postgres_url, required=False)
 
     connection = _connect(account=account, database=database, allow_read_write=allow_read_write)
-    llm = _build_llm_client(config)
-    judge_llm: LLMClient | None = None
-    if eval_config.run_evaluator in ("judge", "composite"):
-        judge_llm = _build_judge_llm_client(judge_model)
 
-    agent = ArgusAgent.from_config(
-        config=config,
-        llm=llm,
-        agent_model_name=config.llm_model,
-        judge_llm=judge_llm,
-        judge_model_name=judge_model,
+    cache_session = (
+        _build_cache_session(json_export=cache_report_json)
+        if (cache_report or cache_report_json)
+        else None
     )
 
-    history = _load_history(persist_url, collection=collection, database=database) if persist_url else None
-    report = agent.run(connection=connection, collection=collection, history=history)
+    with ExitStack() as stack:
+        wrapped_client = stack.enter_context(cache_session) if cache_session is not None else None
+        # Call factories WITHOUT the client kwarg on the default path —
+        # tests monkeypatch them with single-argument fakes.
+        llm = (
+            _build_llm_client(config, client=wrapped_client)
+            if wrapped_client is not None
+            else _build_llm_client(config)
+        )
+        judge_llm: LLMClient | None = None
+        if eval_config.run_evaluator in ("judge", "composite"):
+            judge_llm = (
+                _build_judge_llm_client(judge_model, client=wrapped_client)
+                if wrapped_client is not None
+                else _build_judge_llm_client(judge_model)
+            )
+
+        agent = ArgusAgent.from_config(
+            config=config,
+            llm=llm,
+            agent_model_name=config.llm_model,
+            judge_llm=judge_llm,
+            judge_model_name=judge_model,
+        )
+
+        history = _load_history(persist_url, collection=collection, database=database) if persist_url else None
+        report = agent.run(connection=connection, collection=collection, history=history)
+    # ExitStack closes here: cache-lens prints its report (when enabled)
+    # before the audit output below, so the two are never interleaved.
 
     if persist_url:
         report = _persist_and_diff(report, persist_url)
