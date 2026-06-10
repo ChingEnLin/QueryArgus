@@ -1,9 +1,11 @@
-ITERATION 4/10
+=== COLLECTION UNDER AUDIT (fixed context) ===
 collection: test_coll  database: test_db  account: test-account
 documents_sampled: 0  collection_size: 0
 
 SCHEMA (1 field paths):
   age: present=200 missing=0 null_rate=0.025 card=60 types=int=195,null=5
+
+=== INVESTIGATION PROGRESS (iteration 4/10) ===
 
 QUERIES RUN (1):
   {"age": {"$gt": 150}}
