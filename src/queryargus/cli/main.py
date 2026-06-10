@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from typing import TYPE_CHECKING, Any
 
@@ -456,6 +457,38 @@ def _validate_postgres_url(value: str | None, *, required: bool) -> str | None:
         )
         raise typer.Exit(code=2)
     return url
+
+
+def _build_cache_session(*, json_export: str | None) -> Any:
+    """Build a cache-lens session around a fresh raw genai.Client.
+
+    cachelens is an optional dependency (the ``cache`` extra) — fail with a
+    friendly install hint rather than a traceback.
+    """
+    try:
+        from cache_lens import CacheLens  # noqa: PLC0415
+    except ImportError as exc:
+        typer.secho(
+            "--cache-report requires cachelens: pip install cachelens "
+            "(or pip install 'queryargus[cache]').",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2) from exc
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        typer.secho(
+            "GEMINI_API_KEY is not set; cannot build GeminiClient.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    # Local import — google-genai is heavy; defer until a real run needs it.
+    from google import genai  # noqa: PLC0415
+
+    return CacheLens(genai.Client(api_key=api_key), json_export=json_export)
 
 
 def _load_history(
