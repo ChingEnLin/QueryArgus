@@ -1,7 +1,9 @@
-ITERATION 0/10
+=== COLLECTION UNDER AUDIT (fixed context) ===
 collection: test_coll  database: test_db  account: test-account
 documents_sampled: 0  collection_size: 0
 
 SCHEMA: not yet sampled — call schema_sample first.
+
+=== INVESTIGATION PROGRESS (iteration 0/10) ===
 
 Propose your next action. Return ONLY the JSON object described above; no prose, no markdown.

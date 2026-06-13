@@ -75,16 +75,24 @@ class AgentState:
         return filter_ in self.queries_run
 
     def summarize(self) -> str:
-        """Compact, LLM-friendly snapshot of the investigation. Stable shape across iterations."""
-        lines: list[str] = []
-        lines.append(f"ITERATION {self.iteration}/{self.iteration_budget}")
+        """Compact, LLM-friendly snapshot of the investigation.
+
+        Structured as a *stable prefix* followed by a *volatile trailer* so the
+        request is cache-friendly. The prefix — collection identity, the sampled
+        SCHEMA, and the HISTORICAL CONTEXT — is byte-identical on every turn once
+        the schema is fixed, letting Gemini's implicit cache (and cachelens's
+        prefix detector) anchor on it. Everything that mutates per iteration —
+        the iteration counter, queries run, recent actions, findings, critique,
+        last observation — lives in the trailer. Nothing volatile (notably the
+        running token tally, which changed every call) is allowed in the prefix.
+        """
+        return "\n".join([*self._stable_prefix_lines(), "", *self._volatile_trailer_lines()])
+
+    def _stable_prefix_lines(self) -> list[str]:
+        """Fixed-for-the-run context. Must not contain anything that changes per turn."""
+        lines: list[str] = ["=== COLLECTION UNDER AUDIT (fixed context) ==="]
         lines.append(f"collection: {self.collection}  database: {self.database}  account: {self.cosmos_account}")
         lines.append(f"documents_sampled: {self.documents_sampled}  collection_size: {self.collection_size}")
-        if self.total_usage.total_tokens > 0:
-            lines.append(
-                f"tokens used so far: input={self.total_usage.input_tokens} "
-                f"output={self.total_usage.output_tokens} total={self.total_usage.total_tokens}"
-            )
 
         if self.schema is None:
             lines.append("\nSCHEMA: not yet sampled — call schema_sample first.")
@@ -92,15 +100,10 @@ class AgentState:
             lines.append(f"\nSCHEMA ({len(self.schema.fields)} field paths):")
             for fs in self.schema.fields[:_FIELD_DISPLAY_LIMIT]:
                 types = ",".join(f"{t}={c}" for t, c in sorted(fs.types.items()))
-                marker = ""
-                if fs.path in self.fields_concluded:
-                    marker = " [concluded]"
-                elif fs.path in self.fields_investigated:
-                    marker = " [investigated]"
                 lines.append(
                     f"  {fs.path}: present={fs.present_count} missing={fs.missing_count} "
                     f"null_rate={fs.null_rate:.3f} card={fs.cardinality}"
-                    f"{'+' if fs.cardinality_capped else ''} types={types}{marker}"
+                    f"{'+' if fs.cardinality_capped else ''} types={types}"
                 )
             if len(self.schema.fields) > _FIELD_DISPLAY_LIMIT:
                 lines.append(f"  ... ({len(self.schema.fields) - _FIELD_DISPLAY_LIMIT} more not shown)")
@@ -108,6 +111,19 @@ class AgentState:
         if self.historical_context is not None and not self.historical_context.is_empty:
             lines.append("")
             lines.append(self.historical_context.render())
+
+        return lines
+
+    def _volatile_trailer_lines(self) -> list[str]:
+        """Per-iteration progress. Everything here is expected to change between turns."""
+        lines: list[str] = [f"=== INVESTIGATION PROGRESS (iteration {self.iteration}/{self.iteration_budget}) ==="]
+
+        if self.fields_investigated:
+            lines.append(f"INVESTIGATED FIELDS ({len(self.fields_investigated)}): "
+                         f"{', '.join(sorted(self.fields_investigated))}")
+        if self.fields_concluded:
+            lines.append(f"CONCLUDED FIELDS ({len(self.fields_concluded)}): "
+                         f"{', '.join(sorted(self.fields_concluded))}")
 
         if self.queries_run:
             lines.append(f"\nQUERIES RUN ({len(self.queries_run)}):")
@@ -139,4 +155,4 @@ class AgentState:
         if self.last_observation:
             lines.append(f"\nLAST OBSERVATION: {self.last_observation[:600]}")
 
-        return "\n".join(lines)
+        return lines

@@ -49,14 +49,23 @@ class GeminiClient:
         model: str = "gemini-2.5-flash",
         api_key: str | None = None,
         temperature: float = 0.2,
+        client: Any | None = None,
     ) -> None:
-        api_key = api_key or os.environ.get("GEMINI_API_KEY")
-        if not api_key:
-            raise RuntimeError("GEMINI_API_KEY is not set; cannot build GeminiClient.")
-        # Local import — google-genai is heavy; defer until first use.
-        from google import genai  # noqa: PLC0415
+        """``client`` injects a pre-built (possibly instrumented) genai client.
 
-        self._client: Any = genai.Client(api_key=api_key)
+        When provided — e.g. a cache-lens-wrapped ``genai.Client`` — the
+        ``GEMINI_API_KEY`` check and the ``google.genai`` import are skipped:
+        the injected client already carries its own auth.
+        """
+        if client is None:
+            api_key = api_key or os.environ.get("GEMINI_API_KEY")
+            if not api_key:
+                raise RuntimeError("GEMINI_API_KEY is not set; cannot build GeminiClient.")
+            # Local import — google-genai is heavy; defer until first use.
+            from google import genai  # noqa: PLC0415
+
+            client = genai.Client(api_key=api_key)
+        self._client: Any = client
         self._model = model
         self._temperature = temperature
 

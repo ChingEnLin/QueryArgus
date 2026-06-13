@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 from typing import TYPE_CHECKING, Any
 
 import mongomock
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from queryargus.cli.main import app
@@ -165,3 +168,124 @@ def test_auth_status_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     runner = CliRunner()
     result = runner.invoke(app, ["auth-status"])
     assert result.exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# --cache-report (cache-lens integration)
+# ---------------------------------------------------------------------------
+
+def _install_fake_cache_lens(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Stub the cache_lens module with a session that records lifecycle calls."""
+    state: dict[str, Any] = {}
+
+    class _FakeCacheLens:
+        def __init__(self, client: Any, *, json_export: str | None = None, **_: Any) -> None:
+            state["wrapped_target"] = client
+            state["json_export"] = json_export
+
+        def __enter__(self) -> Any:
+            state["entered"] = True
+            return state["wrapped_target"]
+
+        def __exit__(self, *args: Any) -> bool:
+            state["exited"] = True
+            return False
+
+    fake_mod = types.ModuleType("cache_lens")
+    fake_mod.CacheLens = _FakeCacheLens  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "cache_lens", fake_mod)
+    return state
+
+
+def test_build_cache_session_missing_dep_exits_2(monkeypatch: pytest.MonkeyPatch) -> None:
+    from queryargus.cli import main as cli_main
+
+    # sys.modules[name] = None makes `import cache_lens` raise ImportError.
+    monkeypatch.setitem(sys.modules, "cache_lens", None)
+    with pytest.raises(typer.Exit) as exc_info:
+        cli_main._build_cache_session(json_export=None)
+    assert exc_info.value.exit_code == 2
+
+
+def test_build_cache_session_missing_api_key_exits_1(monkeypatch: pytest.MonkeyPatch) -> None:
+    from queryargus.cli import main as cli_main
+
+    _install_fake_cache_lens(monkeypatch)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    with pytest.raises(typer.Exit) as exc_info:
+        cli_main._build_cache_session(json_export=None)
+    assert exc_info.value.exit_code == 1
+
+
+def test_build_cache_session_constructs_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    from queryargus.cli import main as cli_main
+
+    state = _install_fake_cache_lens(monkeypatch)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    session = cli_main._build_cache_session(json_export="cache.json")
+    assert type(session).__name__ == "_FakeCacheLens"
+    assert state["json_export"] == "cache.json"
+    assert state["wrapped_target"] is not None  # the raw genai.Client
+
+
+def test_run_cache_report_missing_dep_exits_2(
+    patched_credentials: MongoClientT, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(sys.modules, "cache_lens", None)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["run", "--account", "my-acct", "--database", "audit", "--collection", "users",
+         "--cache-report"],
+    )
+    assert result.exit_code == 2
+    assert "pip install cachelens" in (result.stdout + (result.stderr or ""))
+
+
+def test_run_cache_report_wraps_and_flushes_session(
+    patched_credentials: MongoClientT, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _install_fake_cache_lens(monkeypatch)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+    # Re-patch the LLM factory with one that accepts the client kwarg and
+    # records what it was given (the fixture's fake is single-argument).
+    def _fake_llm(_config: ArgusConfig, client: Any = None) -> ScriptedLLMClient:
+        state["llm_factory_client"] = client
+        return ScriptedLLMClient(
+            actions=[
+                AgentAction(reasoning="survey", action="schema_sample",
+                            action_input={"sample_size": 20}, confidence=0.95),
+                AgentAction(reasoning="done", action="conclude", action_input={}, confidence=1.0),
+            ]
+        )
+
+    monkeypatch.setattr("queryargus.cli.main._build_llm_client", _fake_llm)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["run", "--account", "my-acct", "--database", "audit", "--collection", "users",
+         "--cache-report-json", "cache.json"],  # implies --cache-report
+    )
+    assert result.exit_code == 0, result.stdout
+    assert state.get("entered") is True
+    assert state.get("exited") is True
+    assert state["json_export"] == "cache.json"
+    # The wrapped client (what __enter__ returned) reached the LLM factory.
+    assert state["llm_factory_client"] is state["wrapped_target"]
+    # The audit still ran normally.
+    assert "collection: users" in result.stdout
+
+
+def test_run_without_flag_never_touches_cache_lens(
+    patched_credentials: MongoClientT, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # If the code imported cache_lens on the default path, this would exit 2.
+    monkeypatch.setitem(sys.modules, "cache_lens", None)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["run", "--account", "my-acct", "--database", "audit", "--collection", "users"],
+    )
+    assert result.exit_code == 0, result.stdout

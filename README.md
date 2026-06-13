@@ -91,6 +91,8 @@ queryargus version    Print installed version
 | `--eval-finding` | — | Override finding gate strategy |
 | `--eval-run` | — | Override run gate strategy |
 | `--postgres-url` | — | Enable persistence + cross-run memory |
+| `--cache-report` | off | Prompt-cache report via [cachelens](https://pypi.org/project/cachelens/) (`pip install "queryargus[cache]"`) |
+| `--cache-report-json` | — | Export the cache report as JSON (implies `--cache-report`) |
 | `--output` | `text` | `text` / `json` / `silent` |
 | `--verbose` | off | Log each iteration to stderr |
 
